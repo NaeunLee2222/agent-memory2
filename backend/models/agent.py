@@ -1,4 +1,4 @@
-# 4. backend/models/agent.py - 새 파일 생성 (누락된 파일)
+# backend/models/agent.py
 
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
@@ -6,10 +6,12 @@ from datetime import datetime
 from enum import Enum
 
 class AgentMode(str, Enum):
+    """에이전트 모드"""
     FLOW = "flow"
     BASIC = "basic"
 
 class AgentRequest(BaseModel):
+    """에이전트 요청"""
     agent_id: str = Field(..., description="에이전트 ID")
     message: str = Field(..., description="사용자 메시지")
     mode: AgentMode = Field(default=AgentMode.BASIC, description="에이전트 모드")
@@ -19,6 +21,7 @@ class AgentRequest(BaseModel):
     user_id: Optional[str] = Field(None, description="사용자 ID")
     
 class AgentResponse(BaseModel):
+    """에이전트 응답"""
     agent_id: str = Field(..., description="에이전트 ID")
     response: str = Field(..., description="에이전트 응답")
     timestamp: datetime = Field(default_factory=datetime.utcnow, description="응답 시간")
