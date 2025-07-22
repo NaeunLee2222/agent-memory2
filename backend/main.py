@@ -138,7 +138,7 @@ async def chat_with_agent(request: AgentRequest):
         start_time = datetime.utcnow()
         
         # 기본 응답 생성
-        response_content = f"Echo: {request.message}"
+        response_content = f"Echo: {request.message}" # 수정 필요
         
         processing_time = (datetime.utcnow() - start_time).total_seconds()
         
