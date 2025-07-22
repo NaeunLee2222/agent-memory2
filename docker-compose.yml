@@ -4,11 +4,11 @@ services:
   backend:
     build: ./backend
     ports:
-      - "8000:8000"
+      - "8100:8000"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - MEM0_API_KEY=${MEM0_API_KEY}
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://redis:6380
       - CHROMA_HOST=chroma
       - CHROMA_PORT=8001
       - NEO4J_URI=neo4j://neo4j:7687
@@ -27,7 +27,7 @@ services:
     ports:
       - "8501:8501"
     environment:
-      - BACKEND_URL=http://backend:8000
+      - BACKEND_URL=http://backend:8100
     depends_on:
       - backend
     volumes:
@@ -37,7 +37,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "6380:6379"
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data

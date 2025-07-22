@@ -9,7 +9,7 @@ import logging
 
 
 class EnhancedPoCEvaluator:
-    def __init__(self, backend_url: str = "http://localhost:8000"):
+    def __init__(self, backend_url: str = "http://localhost:8100"):
         self.backend_url = backend_url
         self.test_results = {}
         self.performance_data = []

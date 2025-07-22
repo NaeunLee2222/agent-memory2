@@ -7,7 +7,7 @@ load_dotenv()
 class Config:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     MEM0_API_KEY = os.getenv("MEM0_API_KEY")
-    REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+    REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6380")
     CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
     CHROMA_PORT = os.getenv("CHROMA_PORT", "8001")
     NEO4J_URI = os.getenv("NEO4J_URI", "neo4j://localhost:7687")

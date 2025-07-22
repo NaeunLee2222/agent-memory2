@@ -11,7 +11,7 @@ from streamlit_option_menu import option_menu
 from streamlit_autorefresh import st_autorefresh
 
 # 설정
-BACKEND_URL = "http://backend:8000"
+BACKEND_URL = "http://backend:8100"
 
 st.set_page_config(
     page_title="Enhanced Agentic AI PoC",

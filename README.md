@@ -18,8 +18,8 @@ docker-compose up --build
 
 ### 3. 접속 정보
 - Frontend: http://localhost:8501
-- Backend API: http://localhost:8000
-- API 문서: http://localhost:8000/docs
+- Backend API: http://localhost:8100
+- API 문서: http://localhost:8100/docs
 - Prometheus: http://localhost:9090
 
 ## 🧪 평가 실행

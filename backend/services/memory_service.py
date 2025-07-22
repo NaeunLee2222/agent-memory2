@@ -1,428 +1,371 @@
+# 1. backend/services/memory_service.py - 상대 임포트를 절대 임포트로 수정
+
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any, Union
 import asyncio
 import json
-import time
-from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
-import redis.asyncio as redis
-from mem0 import Memory
-from chromadb import Client
-from neo4j import GraphDatabase
-from ..utils.config import config
-from ..models.schemas import (
-    MemoryType,
-    ProceduralMemory,
-    EpisodicMemory,
-    SemanticMemory,
-    WorkflowPattern,
-    MCPToolType,
-)
+from dataclasses import asdict
 
+# 상대 임포트를 절대 임포트로 변경
+from models.memory import MemoryType, MemoryData, MemoryMetrics
+from database.memory_database import MemoryDatabase
+from utils.logger import get_logger
+# from utils.config import config  # 이 라인이 문제를 일으킬 수 있으므로 제거하거나 수정
 
-class EnhancedMemoryService:
-    def __init__(self):
-        self.redis_client = None
-        self.mem0 = Memory()
-        self.chroma_client = None
-        self.neo4j_driver = None
-        self.performance_metrics = []
+logger = get_logger(__name__)
 
-    async def initialize(self):
-        """메모리 시스템 초기화"""
-        # Redis - Working Memory
-        self.redis_client = redis.from_url(config.REDIS_URL)
+# 설정을 직접 정의하거나 환경변수에서 가져오기
+import os
 
-        # ChromaDB - Episodic Memory
-        self.chroma_client = Client(
-            host=config.CHROMA_HOST, port=int(config.CHROMA_PORT)
-        )
-        try:
-            self.episodes_collection = self.chroma_client.create_collection("episodes")
-            self.procedures_collection = self.chroma_client.create_collection(
-                "procedures"
-            )
-        except:
-            self.episodes_collection = self.chroma_client.get_collection("episodes")
-            self.procedures_collection = self.chroma_client.get_collection("procedures")
+class MemoryConfig:
+    MAX_MEMORIES_PER_AGENT = int(os.getenv("MAX_MEMORIES_PER_AGENT", 10000))
+    MAX_STORAGE_PER_AGENT = int(os.getenv("MAX_STORAGE_PER_AGENT", 1000000000))  # 1GB
+    DEFAULT_TTL = int(os.getenv("DEFAULT_TTL", 3600))  # 1시간
+    CLEANUP_INTERVAL = int(os.getenv("CLEANUP_INTERVAL", 300))  # 5분
 
-        # Neo4j - Semantic Memory
-        self.neo4j_driver = GraphDatabase.driver(
-            config.NEO4J_URI, auth=(config.NEO4J_USER, config.NEO4J_PASSWORD)
-        )
+config = MemoryConfig()
 
-    # === Working Memory (작업 기억) ===
-    async def store_working_memory(
-        self, session_id: str, key: str, value: Any, ttl: int = 3600
-    ):
-        """세션별 작업 메모리 저장"""
-        start_time = time.time()
-
-        memory_key = f"working:{session_id}:{key}"
-        await self.redis_client.setex(memory_key, ttl, json.dumps(value, default=str))
-
-        return time.time() - start_time
-
-    async def get_working_memory(
-        self, session_id: str, key: str = None
-    ) -> Dict[str, Any]:
-        """세션별 작업 메모리 조회"""
-        start_time = time.time()
-
-        if key:
-            memory_key = f"working:{session_id}:{key}"
-            result = await self.redis_client.get(memory_key)
-            if result:
-                return {key: json.loads(result)}, time.time() - start_time
-            return {}, time.time() - start_time
-        else:
-            # 세션의 모든 작업 메모리 조회
-            pattern = f"working:{session_id}:*"
-            keys = await self.redis_client.keys(pattern)
-
-            result = {}
-            for full_key in keys:
-                key_name = full_key.decode().split(":")[-1]
-                value = await self.redis_client.get(full_key)
-                if value:
-                    result[key_name] = json.loads(value)
-
-            return result, time.time() - start_time
-
-    # === Procedural Memory (절차적 기억) ===
-    async def store_procedural_memory(
-        self, workflow_pattern: WorkflowPattern, user_id: str
-    ):
-        """성공한 워크플로우 패턴 저장"""
-        start_time = time.time()
-
-        # Mem0에 절차 패턴 저장
-        procedure_data = {
-            "pattern_id": workflow_pattern.pattern_id,
-            "pattern_name": workflow_pattern.pattern_name,
-            "steps": [step.dict() for step in workflow_pattern.steps],
-            "success_rate": workflow_pattern.success_rate,
-            "avg_execution_time": workflow_pattern.avg_execution_time,
-            "usage_count": workflow_pattern.usage_count,
+class MemoryService:
+    def __init__(self, database: MemoryDatabase):
+        self.database = database
+        self.max_memories_per_agent = config.MAX_MEMORIES_PER_AGENT
+        self.max_storage_per_agent = config.MAX_STORAGE_PER_AGENT
+        self.default_ttl = config.DEFAULT_TTL
+        self.cleanup_interval = config.CLEANUP_INTERVAL
+        
+        # 캐시 및 통계
+        self.memory_cache = {}
+        self.access_stats = {
+            'total_stores': 0,
+            'total_retrievals': 0,
+            'cache_hits': 0,
+            'cache_misses': 0
         }
+        
+        # 백그라운드 정리 작업
+        self._cleanup_task = None
+        
+    async def initialize(self):
+        """메모리 서비스 초기화"""
+        try:
+            logger.info("Initializing memory service...")
+            
+            # 백그라운드 정리 작업 시작
+            self._cleanup_task = asyncio.create_task(self._background_cleanup())
+            
+            logger.info("Memory service initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize memory service: {str(e)}")
+            raise
 
-        self.mem0.add(
-            f"Workflow pattern: {workflow_pattern.pattern_name} with {len(workflow_pattern.steps)} steps, "
-            f"success rate: {workflow_pattern.success_rate:.1%}",
-            user_id=user_id,
-            metadata={
-                "type": "procedural",
-                "pattern_id": workflow_pattern.pattern_id,
-                "domain": "workflow",
-            },
-        )
+    async def _background_cleanup(self):
+        """백그라운드 정리 작업"""
+        while True:
+            try:
+                await asyncio.sleep(self.cleanup_interval)
+                await self.cleanup_expired_memories()
+            except Exception as e:
+                logger.error(f"Error in background cleanup: {str(e)}")
+                await asyncio.sleep(60)  # 에러 시 1분 대기
 
-        # ChromaDB에도 상세 정보 저장
-        self.procedures_collection.add(
-            documents=[json.dumps(procedure_data, default=str)],
-            metadatas=[
-                {
-                    "pattern_id": workflow_pattern.pattern_id,
-                    "user_id": user_id,
-                    "success_rate": workflow_pattern.success_rate,
-                    "created_at": datetime.now().isoformat(),
-                }
-            ],
-            ids=[f"{user_id}_{workflow_pattern.pattern_id}"],
-        )
+    async def store_memory(self, memory_data: MemoryData) -> str:
+        """메모리 저장"""
+        try:
+            # 용량 확인
+            await self._check_capacity(memory_data.agent_id)
+            
+            # TTL 설정
+            if memory_data.ttl and not memory_data.expires_at:
+                memory_data.expires_at = datetime.utcnow() + timedelta(seconds=memory_data.ttl)
+            
+            # 데이터베이스에 저장
+            memory_id = await self.database.store_memory(memory_data)
+            
+            # 통계 업데이트
+            self.access_stats['total_stores'] += 1
+            
+            logger.info(f"Stored memory {memory_id} for agent {memory_data.agent_id}")
+            return memory_id
+            
+        except Exception as e:
+            logger.error(f"Error storing memory: {str(e)}")
+            raise
 
-        return time.time() - start_time
-
-    async def retrieve_similar_procedures(
-        self, task_description: str, user_id: str, limit: int = 3
-    ):
-        """유사한 절차 패턴 검색"""
-        start_time = time.time()
-
-        # Mem0에서 관련 절차 검색
-        memories = self.mem0.search(
-            query=f"workflow procedure for: {task_description}",
-            user_id=user_id,
-            limit=limit,
-        )
-
-        procedures = []
-        if memories and "results" in memories:
-            for memory in memories["results"]:
-                metadata = memory.get("metadata", {})
-                if metadata.get("type") == "procedural":
-                    procedures.append(
-                        {
-                            "content": memory.get("memory", ""),
-                            "pattern_id": metadata.get("pattern_id"),
-                            "relevance_score": memory.get("score", 0),
-                        }
-                    )
-
-        return procedures, time.time() - start_time
-
-    # === Episodic Memory (일화적 기억) ===
-    async def store_episodic_memory(self, episode: EpisodicMemory):
-        """사용자 상호작용 에피소드 저장"""
-        start_time = time.time()
-
-        # Mem0에 에피소드 정보 저장
-        episode_content = (
-            f"User {episode.user_id} interaction: {episode.interaction_type}. "
-            f"Context: {episode.context}. "
-            f"Satisfaction: {episode.user_satisfaction}"
-        )
-
-        self.mem0.add(
-            episode_content,
-            user_id=episode.user_id,
-            metadata={
-                "type": "episodic",
-                "episode_id": episode.episode_id,
-                "interaction_type": episode.interaction_type,
-                "timestamp": episode.timestamp.isoformat(),
-            },
-        )
-
-        # ChromaDB에 상세 에피소드 저장
-        episode_data = episode.dict()
-        self.episodes_collection.add(
-            documents=[json.dumps(episode_data, default=str)],
-            metadatas=[
-                {
-                    "user_id": episode.user_id,
-                    "episode_id": episode.episode_id,
-                    "interaction_type": episode.interaction_type,
-                    "timestamp": episode.timestamp.isoformat(),
-                    "satisfaction": episode.user_satisfaction or 0,
-                }
-            ],
-            ids=[episode.episode_id],
-        )
-
-        return time.time() - start_time
-
-    async def retrieve_user_episodes(
-        self, user_id: str, interaction_type: str = None, limit: int = 5
-    ):
-        """사용자의 과거 에피소드 검색"""
-        start_time = time.time()
-
-        query = f"user {user_id} interactions"
-        if interaction_type:
-            query += f" related to {interaction_type}"
-
-        memories = self.mem0.search(query=query, user_id=user_id, limit=limit)
-
-        episodes = []
-        if memories and "results" in memories:
-            for memory in memories["results"]:
-                metadata = memory.get("metadata", {})
-                if metadata.get("type") == "episodic":
-                    episodes.append(
-                        {
-                            "content": memory.get("memory", ""),
-                            "episode_id": metadata.get("episode_id"),
-                            "interaction_type": metadata.get("interaction_type"),
-                            "timestamp": metadata.get("timestamp"),
-                            "relevance_score": memory.get("score", 0),
-                        }
-                    )
-
-        return episodes, time.time() - start_time
-
-    # === Semantic Memory (의미적 기억) ===
-    async def store_semantic_knowledge(self, knowledge: SemanticMemory):
-        """도메인 지식 저장"""
-        start_time = time.time()
-
-        # Neo4j에 지식 그래프로 저장
-        with self.neo4j_driver.session() as session:
-            query = """
-            MERGE (e:Entity {name: $entity, domain: $domain})
-            MERGE (o:Entity {name: $object, domain: $domain})
-            MERGE (e)-[r:RELATION {
-                type: $relation,
-                confidence: $confidence,
-                source: $source,
-                created_at: $created_at,
-                knowledge_id: $knowledge_id
-            }]->(o)
-            SET r.usage_count = COALESCE(r.usage_count, 0) + 1
-            """
-
-            session.run(
-                query,
-                {
-                    "entity": knowledge.entity,
-                    "object": knowledge.object,
-                    "relation": knowledge.relation,
-                    "domain": knowledge.domain,
-                    "confidence": knowledge.confidence,
-                    "source": knowledge.source,
-                    "created_at": knowledge.created_at.isoformat(),
-                    "knowledge_id": knowledge.knowledge_id,
-                },
+    async def retrieve_memories(
+        self, 
+        agent_id: str, 
+        memory_type: Optional[MemoryType] = None,
+        filters: Optional[Dict[str, Any]] = None,
+        limit: Optional[int] = None,
+        order_by: Optional[str] = None
+    ) -> List[MemoryData]:
+        """메모리 검색"""
+        try:
+            memories = await self.database.retrieve_memories(
+                agent_id=agent_id,
+                memory_type=memory_type,
+                filters=filters,
+                limit=limit,
+                order_by=order_by
             )
+            
+            # 통계 업데이트
+            self.access_stats['total_retrievals'] += 1
+            
+            return memories
+            
+        except Exception as e:
+            logger.error(f"Error retrieving memories: {str(e)}")
+            raise
 
-        # Mem0에도 텍스트로 저장
-        knowledge_text = f"{knowledge.entity} {knowledge.relation} {knowledge.object} in {knowledge.domain} domain"
-        self.mem0.add(
-            knowledge_text,
-            user_id="system",  # 시스템 레벨 지식
-            metadata={
-                "type": "semantic",
-                "domain": knowledge.domain,
-                "knowledge_id": knowledge.knowledge_id,
-                "confidence": knowledge.confidence,
-            },
-        )
+    async def search_memories(
+        self,
+        agent_id: str,
+        query: str,
+        memory_types: Optional[List[MemoryType]] = None,
+        limit: Optional[int] = None,
+        similarity_threshold: Optional[float] = None
+    ) -> List[MemoryData]:
+        """메모리 검색"""
+        try:
+            results = await self.database.search_memories(
+                agent_id=agent_id,
+                query=query,
+                memory_types=memory_types,
+                limit=limit,
+                similarity_threshold=similarity_threshold
+            )
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error searching memories: {str(e)}")
+            raise
 
-        return time.time() - start_time
+    async def update_memory(
+        self, 
+        memory_id: str,
+        content: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """메모리 업데이트"""
+        try:
+            success = await self.database.update_memory(
+                memory_id=memory_id,
+                content=content,
+                metadata=metadata,
+                context=context
+            )
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error updating memory: {str(e)}")
+            raise
 
-    async def query_semantic_knowledge(
-        self, entity: str, domain: str = None, limit: int = 10
-    ):
-        """의미적 지식 쿼리"""
-        start_time = time.time()
+    async def delete_memory(self, memory_id: str) -> bool:
+        """메모리 삭제"""
+        try:
+            success = await self.database.delete_memory(memory_id)
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error deleting memory: {str(e)}")
+            raise
 
-        with self.neo4j_driver.session() as session:
-            if domain:
-                query = """
-                MATCH (e:Entity {name: $entity, domain: $domain})-[r:RELATION]->(o:Entity)
-                RETURN e.name as entity, r.type as relation, o.name as object, 
-                       r.confidence as confidence, r.usage_count as usage_count
-                ORDER BY r.confidence DESC, r.usage_count DESC
-                LIMIT $limit
-                """
-                result = session.run(
-                    query, {"entity": entity, "domain": domain, "limit": limit}
+    async def get_memory_by_id(self, memory_id: str) -> Optional[MemoryData]:
+        """ID로 메모리 조회"""
+        try:
+            memories = await self.database.retrieve_memories(
+                filters={'memory_id': memory_id},
+                limit=1
+            )
+            return memories[0] if memories else None
+            
+        except Exception as e:
+            logger.error(f"Error getting memory by ID: {str(e)}")
+            raise
+
+    async def get_memory_stats(self, agent_id: Optional[str] = None) -> Dict[str, Any]:
+        """메모리 통계 조회"""
+        try:
+            stats = await self.database.get_memory_stats(agent_id=agent_id)
+            
+            # 서비스 레벨 통계 추가
+            stats.update(self.access_stats)
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Error getting memory stats: {str(e)}")
+            raise
+
+    async def get_memory_metrics(self, agent_id: str) -> MemoryMetrics:
+        """메모리 메트릭 계산"""
+        try:
+            memories = await self.retrieve_memories(agent_id=agent_id, limit=1000)
+            
+            total_memories = len(memories)
+            memory_distribution = {}
+            total_size = 0
+            
+            for memory in memories:
+                memory_type = memory.memory_type
+                if memory_type not in memory_distribution:
+                    memory_distribution[memory_type] = 0
+                memory_distribution[memory_type] += 1
+                
+                # 대략적인 크기 계산
+                content_size = len(json.dumps(memory.content, default=str))
+                total_size += content_size
+            
+            avg_size = total_size / total_memories if total_memories > 0 else 0
+            
+            return MemoryMetrics(
+                total_memories=total_memories,
+                memory_distribution=memory_distribution,
+                total_size_bytes=total_size,
+                average_size_bytes=avg_size,
+                oldest_memory=min((m.timestamp for m in memories), default=None),
+                newest_memory=max((m.timestamp for m in memories), default=None)
+            )
+            
+        except Exception as e:
+            logger.error(f"Error calculating memory metrics: {str(e)}")
+            raise
+
+    async def cleanup_expired_memories(self) -> int:
+        """만료된 메모리 정리"""
+        try:
+            deleted_count = await self.database.cleanup_expired_memories()
+            logger.info(f"Cleaned up {deleted_count} expired memories")
+            return deleted_count
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up expired memories: {str(e)}")
+            raise
+
+    async def cleanup_old_memories(
+        self,
+        memory_type: Optional[MemoryType] = None,
+        cutoff_date: Optional[datetime] = None,
+        filters: Optional[Dict[str, Any]] = None
+    ) -> int:
+        """오래된 메모리 정리"""
+        try:
+            if hasattr(self.database, 'cleanup_old_memories'):
+                deleted_count = await self.database.cleanup_old_memories(
+                    memory_type=memory_type,
+                    cutoff_date=cutoff_date,
+                    filters=filters
                 )
             else:
-                query = """
-                MATCH (e:Entity {name: $entity})-[r:RELATION]->(o:Entity)
-                RETURN e.name as entity, r.type as relation, o.name as object, 
-                       r.confidence as confidence, r.usage_count as usage_count, e.domain as domain
-                ORDER BY r.confidence DESC, r.usage_count DESC
-                LIMIT $limit
-                """
-                result = session.run(query, {"entity": entity, "limit": limit})
-
-            knowledge_items = []
-            for record in result:
-                knowledge_items.append(
-                    {
-                        "entity": record["entity"],
-                        "relation": record["relation"],
-                        "object": record["object"],
-                        "confidence": record["confidence"],
-                        "usage_count": record["usage_count"],
-                        "domain": record.get("domain", domain),
-                    }
+                # 대체 구현
+                cutoff_date = cutoff_date or (datetime.utcnow() - timedelta(days=30))
+                filters = filters or {}
+                filters['timestamp__lt'] = cutoff_date
+                
+                old_memories = await self.retrieve_memories(
+                    agent_id=filters.get('agent_id', ''),
+                    memory_type=memory_type,
+                    filters=filters
                 )
-
-        return knowledge_items, time.time() - start_time
-
-    # === 통합 검색 메소드 ===
-    async def retrieve_relevant_memories(
-        self,
-        user_id: str,
-        query: str,
-        memory_types: List[MemoryType] = None,
-        limit: int = 5,
-    ):
-        """관련 메모리 통합 검색"""
-        start_time = time.time()
-        all_memories = {
-            MemoryType.WORKING: [],
-            MemoryType.EPISODIC: [],
-            MemoryType.SEMANTIC: [],
-            MemoryType.PROCEDURAL: [],
-        }
-
-        # 요청된 메모리 타입만 검색 (기본은 모든 타입)
-        if memory_types is None:
-            memory_types = list(MemoryType)
-
-        # Mem0 통합 검색
-        memories = self.mem0.search(
-            query=query, user_id=user_id, limit=limit * len(memory_types)
-        )
-
-        if memories and "results" in memories:
-            for memory in memories["results"]:
-                metadata = memory.get("metadata", {})
-                memory_type = metadata.get("type", "")
-
-                memory_item = {
-                    "content": memory.get("memory", ""),
-                    "score": memory.get("score", 0),
-                    "metadata": metadata,
-                }
-
-                if memory_type == "working" and MemoryType.WORKING in memory_types:
-                    all_memories[MemoryType.WORKING].append(memory_item)
-                elif memory_type == "episodic" and MemoryType.EPISODIC in memory_types:
-                    all_memories[MemoryType.EPISODIC].append(memory_item)
-                elif memory_type == "semantic" and MemoryType.SEMANTIC in memory_types:
-                    all_memories[MemoryType.SEMANTIC].append(memory_item)
-                elif (
-                    memory_type == "procedural"
-                    and MemoryType.PROCEDURAL in memory_types
-                ):
-                    all_memories[MemoryType.PROCEDURAL].append(memory_item)
-
-        # 각 타입별로 최고 점수 항목들만 유지
-        for memory_type in all_memories:
-            all_memories[memory_type] = sorted(
-                all_memories[memory_type], key=lambda x: x["score"], reverse=True
-            )[:limit]
-
-        return all_memories, time.time() - start_time
-
-    async def get_memory_statistics(self):
-        """메모리 시스템 통계"""
-        stats = {}
-
-        try:
-            # Redis 통계
-            redis_info = await self.redis_client.info()
-            working_keys = await self.redis_client.keys("working:*")
-            stats["working_memory"] = {
-                "total_keys": len(working_keys),
-                "memory_usage": redis_info.get("used_memory_human", "0"),
-                "connected_clients": redis_info.get("connected_clients", 0),
-            }
-
-            # ChromaDB 통계
-            stats["episodic_memory"] = {
-                "episodes_count": self.episodes_collection.count(),
-                "procedures_count": self.procedures_collection.count(),
-            }
-
-            # Neo4j 통계
-            with self.neo4j_driver.session() as session:
-                result = session.run("MATCH (n) RETURN count(n) as node_count")
-                node_count = result.single()["node_count"]
-
-                result = session.run("MATCH ()-[r]->() RETURN count(r) as rel_count")
-                rel_count = result.single()["rel_count"]
-
-                stats["semantic_memory"] = {
-                    "nodes_count": node_count,
-                    "relationships_count": rel_count,
-                }
-
-            # 성능 메트릭
-            if self.performance_metrics:
-                recent_metrics = self.performance_metrics[-10:]
-                avg_time = sum(m.memory_retrieval_time for m in recent_metrics) / len(
-                    recent_metrics
-                )
-                stats["performance"] = {
-                    "avg_retrieval_time": avg_time,
-                    "total_operations": len(self.performance_metrics),
-                }
-
+                
+                deleted_count = 0
+                for memory in old_memories:
+                    if await self.delete_memory(memory.memory_id):
+                        deleted_count += 1
+            
+            logger.info(f"Cleaned up {deleted_count} old memories")
+            return deleted_count
+            
         except Exception as e:
-            stats["error"] = str(e)
+            logger.error(f"Error cleaning up old memories: {str(e)}")
+            raise
 
-        return stats
+    async def _check_capacity(self, agent_id: str):
+        """용량 확인"""
+        try:
+            stats = await self.get_memory_stats(agent_id=agent_id)
+            
+            total_memories = stats.get('total_memories', 0)
+            total_storage = stats.get('total_storage_used', 0)
+            
+            if total_memories >= self.max_memories_per_agent:
+                await self.auto_cleanup_memories(agent_id)
+            
+            if total_storage >= self.max_storage_per_agent:
+                await self.auto_cleanup_memories(agent_id)
+                
+        except Exception as e:
+            logger.error(f"Error checking capacity: {str(e)}")
+            # 용량 확인 실패 시에도 저장은 계속 진행
+
+    async def check_memory_capacity(self, agent_id: str) -> Dict[str, Any]:
+        """메모리 용량 확인"""
+        try:
+            stats = await self.get_memory_stats(agent_id=agent_id)
+            
+            total_memories = stats.get('total_memories', 0)
+            total_storage = stats.get('total_storage_used', 0)
+            
+            memory_usage = total_memories / self.max_memories_per_agent
+            storage_usage = total_storage / self.max_storage_per_agent
+            
+            return {
+                'memory_count_usage': memory_usage,
+                'storage_usage': storage_usage,
+                'needs_cleanup': memory_usage > 0.9 or storage_usage > 0.9,
+                'total_memories': total_memories,
+                'total_storage_used': total_storage,
+                'max_memories': self.max_memories_per_agent,
+                'max_storage': self.max_storage_per_agent
+            }
+            
+        except Exception as e:
+            logger.error(f"Error checking memory capacity: {str(e)}")
+            return {
+                'memory_count_usage': 0,
+                'storage_usage': 0,
+                'needs_cleanup': False,
+                'error': str(e)
+            }
+
+    async def auto_cleanup_memories(self, agent_id: str) -> Dict[str, Any]:
+        """자동 메모리 정리"""
+        try:
+            # 만료된 메모리 먼저 정리
+            expired_cleaned = await self.cleanup_expired_memories()
+            
+            # 오래된 메모리 정리
+            cutoff_date = datetime.utcnow() - timedelta(days=7)
+            old_cleaned = await self.cleanup_old_memories(
+                cutoff_date=cutoff_date,
+                filters={'agent_id': agent_id}
+            )
+            
+            return {
+                'expired_cleaned': expired_cleaned,
+                'old_cleaned': old_cleaned,
+                'total_cleaned': expired_cleaned + old_cleaned
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in auto cleanup: {str(e)}")
+            return {
+                'expired_cleaned': 0,
+                'old_cleaned': 0,
+                'total_cleaned': 0,
+                'error': str(e)
+            }
+
+    async def shutdown(self):
+        """메모리 서비스 종료"""
+        try:
+            if self._cleanup_task:
+                self._cleanup_task.cancel()
+                
+            logger.info("Memory service shutdown completed")
+            
+        except Exception as e:
+            logger.error(f"Error during memory service shutdown: {str(e)}")
