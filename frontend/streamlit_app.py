@@ -1,575 +1,457 @@
 import streamlit as st
 import requests
-import time
 import json
-import plotly.graph_objects as go
-import plotly.express as px
-import pandas as pd
 from datetime import datetime, timedelta
-import asyncio
-from streamlit_option_menu import option_menu
-from streamlit_autorefresh import st_autorefresh
+import time
+import plotly.express as px
+import plotly.graph_objects as go
+import pandas as pd
+from typing import Dict, List, Any, Optional
+import os
 
-# 설정
-BACKEND_URL = "http://backend:8100"
-
+# 페이지 설정
 st.set_page_config(
-    page_title="Enhanced Agentic AI PoC",
+    page_title="Agent Memory & Feedback System",
     page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# 세션 상태 초기화
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "session_id" not in st.session_state:
-    st.session_state.session_id = f"session_{int(time.time())}"
-if "user_id" not in st.session_state:
-    st.session_state.user_id = "demo_user"
-if "performance_data" not in st.session_state:
-    st.session_state.performance_data = []
-if "feedback_history" not in st.session_state:
-    st.session_state.feedback_history = []
+# API 기본 URL (환경변수에서 가져오거나 기본값 사용)
+API_BASE_URL = os.getenv("BACKEND_URL", "http://backend:8100")  # 포트 8100으로 수정
 
-def call_backend(endpoint, method="GET", data=None):
-    """백엔드 API 호출"""
-    try:
-        url = f"{BACKEND_URL}{endpoint}"
-        if method == "GET":
-            response = requests.get(url, timeout=30)
-        else:
-            response = requests.post(url, json=data, timeout=30)
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            st.error(f"백엔드 오류: {response.status_code} - {response.text}")
-            return None
-    except Exception as e:
-        st.error(f"연결 오류: {str(e)}")
-        return None
 
-def send_chat_message(message, mode):
-    """채팅 메시지 전송"""
-    data = {
-        "message": message,
-        "user_id": st.session_state.user_id,
-        "session_id": st.session_state.session_id,
-        "mode": mode,
-        "context": {}
-    }
+class AgentMemoryApp:
+    def __init__(self):
+        self.session_state_init()
     
-    with st.spinner("🤖 AI가 처리 중입니다..."):
-        response = call_backend("/chat", method="POST", data=data)
+    def session_state_init(self):
+        """세션 상태 초기화"""
+        if 'messages' not in st.session_state:
+            st.session_state.messages = []
+        if 'agent_id' not in st.session_state:
+            st.session_state.agent_id = "agent_001"
+        if 'session_id' not in st.session_state:
+            st.session_state.session_id = f"session_{int(time.time())}"
+        if 'mode' not in st.session_state:
+            st.session_state.mode = "basic"
     
-    if response:
-        # 성능 데이터 저장
-        st.session_state.performance_data.append({
-            "timestamp": datetime.now(),
-            "processing_time": response.get("processing_time", 0),
-            "tools_used": len(response.get("tools_used", [])),
-            "confidence_score": response.get("confidence_score", 0),
-            "mode": mode,
-            "memory_types": len([k for k, v in response.get("memory_used", {}).items() if v])
-        })
-        
-        return response
-    return None
-
-def send_feedback(feedback_type, content, rating=None):
-    """피드백 전송"""
-    data = {
-        "session_id": st.session_state.session_id,
-        "user_id": st.session_state.user_id,
-        "feedback_type": feedback_type,
-        "content": content,
-        "rating": rating
-    }
-    
-    start_time = time.time()
-    response = call_backend("/feedback", method="POST", data=data)
-    end_time = time.time()
-    
-    if response:
-        feedback_record = {
-            "timestamp": datetime.now(),
-            "type": feedback_type,
-            "content": content,
-            "response_time": end_time - start_time,
-            "optimizations": response.get("optimizations", []),
-            "applied": response.get("applied", False)
-        }
-        st.session_state.feedback_history.append(feedback_record)
-        
-        # 5초 이내 목표 달성 여부 표시
-        if end_time - start_time < 5.0:
-            st.success(f"✅ 피드백이 {end_time - start_time:.2f}초 만에 적용되었습니다!")
-        else:
-            st.warning(f"⚠️ 피드백 처리가 {end_time - start_time:.2f}초 소요되었습니다 (목표: 5초 이내)")
-        
-        if response.get("optimizations"):
-            st.write("**적용된 최적화:**")
-            for opt in response["optimizations"]:
-                st.write(f"- {opt}")
-    
-    return response
-
-# === 메인 인터페이스 ===
-st.title("🤖 Enhanced Agentic AI PoC")
-st.markdown("**MCP 도구 기반 지능형 메모리와 5초 이내 피드백 루프**")
-
-# 사이드바 메뉴
-with st.sidebar:
-    selected = option_menu(
-        "메인 메뉴",
-        ["💬 채팅", "🧠 메모리 분석", "⚡ 피드백 센터", "📊 성능 대시보드", "🔧 시스템 상태"],
-        icons=['chat', 'brain', 'lightning', 'graph-up', 'gear'],
-        menu_icon="robot",
-        default_index=0,
-    )
-    
-    st.markdown("---")
-    
-    # 사용자 설정
-    st.header("👤 사용자 설정")
-    st.session_state.user_id = st.text_input("사용자 ID", value=st.session_state.user_id)
-    
-    # 새 세션 시작
-    if st.button("🔄 새 세션 시작"):
-        st.session_state.session_id = f"session_{int(time.time())}"
-        st.session_state.messages = []
-        st.success("새 세션이 시작되었습니다!")
-        st.rerun()
-
-# === 채팅 인터페이스 ===
-if selected == "💬 채팅":
-    st.header("💬 지능형 채팅 인터페이스")
-    
-    # 모드 선택
-    col1, col2 = st.columns(2)
-    with col1:
-        mode = st.radio("실행 모드", ["flow", "basic"], 
-                       help="Flow: 구조화된 Step-Action-Tool, Basic: 자율적 도구 선택")
-    with col2:
-        st.write("**현재 세션:**", st.session_state.session_id[-8:])
-        st.write("**처리된 메시지:**", len(st.session_state.messages) // 2)
-    
-    # 빠른 테스트 버튼들
-    st.subheader("🚀 빠른 테스트")
-    test_col1, test_col2, test_col3 = st.columns(3)
-    
-    with test_col1:
-        if st.button("📊 데이터 조회 테스트"):
-            test_message = "사용자 데이터를 조회하고 Slack으로 알림해주세요"
-            st.session_state.test_message = test_message
-    
-    with test_col2:
-        if st.button("🚨 비상 알림 테스트"):
-            test_message = "SHE 비상 상황이 발생했습니다. 긴급 알림을 보내주세요"
-            st.session_state.test_message = test_message
-    
-    with test_col3:
-        if st.button("🔄 절차 학습 테스트"):
-            test_message = "주간 리포트를 생성하고 관련 팀에 전송해주세요"
-            st.session_state.test_message = test_message
-    
-    # 채팅 기록 표시
-    chat_container = st.container()
-    with chat_container:
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
+    def make_api_request(self, endpoint: str, method: str = "GET", data: Optional[Dict] = None) -> Optional[Dict]:
+        """API 요청 수행"""
+        try:
+            url = f"{API_BASE_URL}{endpoint}"
+            
+            if method == "POST":
+                response = requests.post(url, json=data, timeout=30)
+            elif method == "GET":
+                response = requests.get(url, timeout=30)
+            else:
+                st.error(f"지원하지 않는 HTTP 메서드: {method}")
+                return None
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                st.error(f"API 요청 실패: {response.status_code} - {response.text}")
+                return None
                 
-                if message["role"] == "assistant" and "metadata" in message:
-                    with st.expander("📊 실행 상세 정보"):
-                        metadata = message["metadata"]
-                        
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("처리 시간", f"{metadata.get('processing_time', 0):.2f}초")
-                        with col2:
-                            st.metric("사용 도구", f"{len(metadata.get('tools_used', []))}개")
-                        with col3:
-                            st.metric("신뢰도", f"{metadata.get('confidence_score', 0):.1%}")
-                        
-                        if metadata.get("workflow_executed"):
-                            st.write("**실행된 워크플로우:**", metadata["workflow_executed"].get("pattern_name", "N/A"))
-                        
-                        if metadata.get("memory_used"):
-                            st.write("**활용된 메모리:**")
-                            for memory_type, items in metadata["memory_used"].items():
-                                if items:
-                                    st.write(f"- {memory_type}: {len(items)}개 항목")
-                        
-                        if metadata.get("optimization_applied"):
-                            st.write("**적용된 최적화:**")
-                            for opt in metadata["optimization_applied"]:
-                                st.write(f"- {opt}")
+        except requests.exceptions.ConnectionError:
+            st.error("🔌 백엔드 서버에 연결할 수 없습니다. 서버가 실행 중인지 확인해주세요.")
+            return None
+        except requests.exceptions.Timeout:
+            st.error("⏰ 요청 시간이 초과되었습니다.")
+            return None
+        except Exception as e:
+            st.error(f"❌ 예상치 못한 오류: {str(e)}")
+            return None
     
-    # 테스트 메시지 자동 입력
-    default_message = ""
-    if hasattr(st.session_state, 'test_message'):
-        default_message = st.session_state.test_message
-        delattr(st.session_state, 'test_message')
-    
-    # 채팅 입력
-    if prompt := st.chat_input("메시지를 입력하세요...", value=default_message):
-        # 사용자 메시지 추가
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    def chat_with_agent(self, message: str, agent_id: str, mode: str) -> Optional[str]:
+        """에이전트와 채팅"""
+        data = {
+            "agent_id": agent_id,
+            "message": message,
+            "mode": mode,
+            "session_id": st.session_state.session_id
+        }
         
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        
-        # AI 응답 처리
-        response = send_chat_message(prompt, mode)
+        response = self.make_api_request("/api/v1/agents/chat", "POST", data)
         
         if response:
-            # AI 응답 추가
-            assistant_message = {
-                "role": "assistant",
-                "content": response["response"],
-                "metadata": response
-            }
-            st.session_state.messages.append(assistant_message)
-            
-            with st.chat_message("assistant"):
-                st.markdown(response["response"])
-                
-                with st.expander("📊 실행 상세 정보"):
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("처리 시간", f"{response.get('processing_time', 0):.2f}초")
-                    with col2:
-                        st.metric("사용 도구", f"{len(response.get('tools_used', []))}개")
-                    with col3:
-                        st.metric("신뢰도", f"{response.get('confidence_score', 0):.1%}")
+            return response.get("response", "응답을 받지 못했습니다.")
+        return None
     
-    # 즉시 피드백 섹션
-    with st.expander("⚡ 즉시 피드백 (5초 이내 목표)", expanded=False):
-        feedback_col1, feedback_col2 = st.columns(2)
-        
-        with feedback_col1:
-            st.write("**스타일 피드백**")
-            if st.button("🎭 더 친근하게"):
-                send_feedback("style_preference", "더 친근하고 캐주얼한 톤으로 대화해주세요")
-            if st.button("💼 더 공식적으로"):
-                send_feedback("style_preference", "더 공식적이고 비즈니스 톤으로 대화해주세요")
-            if st.button("🔬 더 기술적으로"):
-                send_feedback("style_preference", "더 기술적이고 전문적인 설명을 해주세요")
-        
-        with feedback_col2:
-            st.write("**내용 피드백**")
-            if st.button("📝 더 자세히"):
-                send_feedback("response_quality", "응답이 너무 간단해요. 더 자세한 설명이 필요해요", rating=2.0)
-            if st.button("📋 더 간략하게"):
-                send_feedback("response_quality", "응답이 너무 길어요. 더 간략하게 요약해주세요", rating=2.5)
-            if st.button("🚀 속도 우선"):
-                send_feedback("workflow_efficiency", "정확도보다 빠른 응답이 더 중요해요")
-
-# === 메모리 분석 ===
-elif selected == "🧠 메모리 분석":
-    st.header("🧠 지능형 메모리 시스템 분석")
-    
-    # 실시간 새로고침
-    st_autorefresh(interval=10000, key="memory_refresh")  # 10초마다 새로고침
-    
-    # 메모리 통계 조회
-    memory_stats = call_backend("/memory/stats")
-    
-    if memory_stats:
-        st.subheader("📊 메모리 시스템 현황")
-        
-        # 메트릭 표시
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            working_count = memory_stats.get("working_memory", {}).get("total_keys", 0)
-            st.metric("작업 메모리", f"{working_count}개", help="현재 활성 세션의 임시 메모리")
-        
-        with col2:
-            episodic_count = memory_stats.get("episodic_memory", {}).get("episodes_count", 0)
-            st.metric("에피소드 메모리", f"{episodic_count}개", help="사용자 상호작용 기록")
-        
-        with col3:
-            semantic_nodes = memory_stats.get("semantic_memory", {}).get("nodes_count", 0)
-            st.metric("시맨틱 메모리", f"{semantic_nodes}개", help="도메인 지식 노드")
-        
-        with col4:
-            procedures_count = memory_stats.get("episodic_memory", {}).get("procedures_count", 0)
-            st.metric("절차 메모리", f"{procedures_count}개", help="학습된 워크플로우 패턴")
-        
-        # 성능 지표
-        if "performance" in memory_stats:
-            st.subheader("⚡ 메모리 성능 지표")
-            perf = memory_stats["performance"]
-            
-            perf_col1, perf_col2 = st.columns(2)
-            with perf_col1:
-                avg_time = perf.get("avg_retrieval_time", 0)
-                color = "green" if avg_time < 0.2 else "orange" if avg_time < 0.5 else "red"
-                st.metric(
-                    "평균 검색 시간", 
-                    f"{avg_time:.3f}초", 
-                    help="목표: 0.2초 이하",
-                    delta=f"목표 대비 {(avg_time - 0.2):.3f}초" if avg_time > 0.2 else "목표 달성!"
-                )
-            
-            with perf_col2:
-                total_ops = perf.get("total_operations", 0)
-                st.metric("총 작업 수", f"{total_ops:,}회")
-        
-        # 메모리 사용률 시각화
-        st.subheader("📈 메모리 사용 분포")
-        
-        memory_data = {
-            "메모리 유형": ["작업 메모리", "에피소드 메모리", "시맨틱 메모리", "절차 메모리"],
-            "항목 수": [
-                working_count,
-                episodic_count, 
-                semantic_nodes,
-                procedures_count
-            ]
+    def collect_feedback(self, agent_id: str, feedback_type: str, content: str, metadata: Optional[Dict] = None) -> bool:
+        """피드백 수집 - JSON body 방식으로 수정"""
+        data = {
+            "agent_id": agent_id,
+            "feedback_type": feedback_type,
+            "content": content,
+            "metadata": metadata or {"session_id": st.session_state.session_id},
+            "context": {"timestamp": datetime.utcnow().isoformat()}
         }
         
-        df_memory = pd.DataFrame(memory_data)
-        fig_pie = px.pie(df_memory, values="항목 수", names="메모리 유형", 
-                        title="메모리 유형별 분포")
-        st.plotly_chart(fig_pie, use_container_width=True)
-        
-        # Redis 상세 정보
-        if "working_memory" in memory_stats:
-            st.subheader("💾 Redis 작업 메모리 상세")
-            redis_info = memory_stats["working_memory"]
-            
-            detail_col1, detail_col2 = st.columns(2)
-            with detail_col1:
-                st.write(f"**메모리 사용량:** {redis_info.get('memory_usage', 'N/A')}")
-            with detail_col2:
-                st.write(f"**연결된 클라이언트:** {redis_info.get('connected_clients', 0)}개")
+        response = self.make_api_request("/api/v1/feedback/collect", "POST", data)
+        return response is not None
     
-    # 메모리 테스트 섹션
-    st.subheader("🧪 메모리 시스템 테스트")
+    def get_memory_stats(self, agent_id: str) -> Optional[Dict]:
+        """메모리 통계 조회"""
+        return self.make_api_request(f"/api/v1/memory/{agent_id}/stats")
     
-    test_col1, test_col2 = st.columns(2)
+    def get_feedback_insights(self, agent_id: str) -> Optional[Dict]:
+        """피드백 인사이트 조회"""
+        return self.make_api_request(f"/api/v1/feedback/{agent_id}/insights")
     
-    with test_col1:
-        st.write("**절차 메모리 테스트**")
-        if st.button("📋 워크플로우 학습 테스트"):
-            # 동일한 작업을 3번 수행하여 절차 학습 확인
-            test_message = "데이터 조회 → 메시지 생성 → Slack 전송 워크플로우 테스트"
-            response = send_chat_message(test_message, "flow")
-            if response:
-                st.success("워크플로우 실행 완료! 3회 반복 후 자동 학습을 확인해보세요.")
-    
-    with test_col2:
-        st.write("**에피소드 메모리 테스트**")
-        if st.button("🎯 개인화 학습 테스트"):
-            test_message = "제 선호도를 기억해주세요: 간결한 메시지, 기술적 설명 선호"
-            response = send_chat_message(test_message, "basic")
-            if response:
-                st.success("선호도 저장 완료! 다음 대화에서 개인화 효과를 확인해보세요.")
+    def get_system_health(self) -> Optional[Dict]:
+        """시스템 건강 상태 조회"""
+        return self.make_api_request("/api/v1/performance/system")
 
-# === 피드백 센터 ===
-elif selected == "⚡ 피드백 센터":
-    st.header("⚡ 실시간 피드백 센터")
-    st.markdown("**목표: 5초 이내 피드백 반영**")
-    
-    # 피드백 이력 표시
-    if st.session_state.feedback_history:
-        st.subheader("📊 피드백 처리 성능")
+    def render_chat_interface(self):
+        """채팅 인터페이스 렌더링 - 피드백 버튼 수정"""
+        st.header("🤖 Agent Chat")
         
-        df_feedback = pd.DataFrame(st.session_state.feedback_history)
+        # 설정 사이드바
+        with st.sidebar:
+            st.subheader("⚙️ 설정")
+            
+            # 에이전트 ID 설정
+            agent_id = st.text_input("Agent ID", value=st.session_state.agent_id)
+            if agent_id != st.session_state.agent_id:
+                st.session_state.agent_id = agent_id
+            
+            # 모드 선택
+            mode = st.selectbox(
+                "모드 선택",
+                options=["basic", "flow"],
+                index=0 if st.session_state.mode == "basic" else 1
+            )
+            if mode != st.session_state.mode:
+                st.session_state.mode = mode
+            
+            # 새 세션 시작
+            if st.button("🔄 새 세션 시작"):
+                st.session_state.messages = []
+                st.session_state.session_id = f"session_{int(time.time())}"
+                st.rerun()
         
-        # 5초 이내 달성률 계산
-        within_5s = len(df_feedback[df_feedback["response_time"] < 5.0])
-        total_feedback = len(df_feedback)
-        success_rate = (within_5s / total_feedback * 100) if total_feedback > 0 else 0
+        # 채팅 히스토리 표시
+        chat_container = st.container()
         
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("5초 이내 처리율", f"{success_rate:.1f}%", 
-                     help="목표: 95% 이상")
-        with col2:
-            avg_time = df_feedback["response_time"].mean()
-            st.metric("평균 처리 시간", f"{avg_time:.2f}초")
-        with col3:
-            st.metric("총 피드백", f"{total_feedback}건")
+        with chat_container:
+            for i, message in enumerate(st.session_state.messages):
+                with st.chat_message(message["role"]):
+                    st.write(message["content"])
+                    
+                    # 응답 시간 표시
+                    if "timestamp" in message:
+                        st.caption(f"📅 {message['timestamp']}")
+                    
+                    # 피드백 버튼 (어시스턴트 메시지에만)
+                    if message["role"] == "assistant":
+                        col1, col2, col3 = st.columns([1, 1, 1])
+                        
+                        # 고유한 키 생성
+                        message_key = f"msg_{i}_{message.get('timestamp', str(time.time())).replace(' ', '_').replace(':', '_')}"
+                        
+                        with col1:
+                            if st.button("👍 좋음", key=f"good_{message_key}"):
+                                success = self.collect_feedback(
+                                    agent_id=st.session_state.agent_id,
+                                    feedback_type="success",
+                                    content="사용자가 응답에 만족함",
+                                    metadata={
+                                        "session_id": st.session_state.session_id,
+                                        "message_index": i,
+                                        "original_message": message["content"][:100]  # 첫 100자만
+                                    }
+                                )
+                                if success:
+                                    st.success("✅ 긍정적 피드백이 수집되었습니다!")
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error("❌ 피드백 수집 실패")
+                        
+                        with col2:
+                            if st.button("👎 나쁨", key=f"bad_{message_key}"):
+                                success = self.collect_feedback(
+                                    agent_id=st.session_state.agent_id,
+                                    feedback_type="error",
+                                    content="사용자가 응답에 불만족",
+                                    metadata={
+                                        "session_id": st.session_state.session_id,
+                                        "message_index": i,
+                                        "original_message": message["content"][:100]
+                                    }
+                                )
+                                if success:
+                                    st.success("✅ 부정적 피드백이 수집되었습니다!")
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error("❌ 피드백 수집 실패")
+                        
+                        with col3:
+                            # 수정 피드백을 위한 expander
+                            with st.expander("🔧 수정하기"):
+                                correction = st.text_area(
+                                    "수정 내용을 입력하세요:",
+                                    key=f"correction_input_{message_key}",
+                                    placeholder="어떻게 개선되었으면 좋겠는지 설명해주세요..."
+                                )
+                                if st.button("수정사항 제출", key=f"submit_correction_{message_key}"):
+                                    if correction.strip():
+                                        success = self.collect_feedback(
+                                            agent_id=st.session_state.agent_id,
+                                            feedback_type="user_correction",
+                                            content=correction,
+                                            metadata={
+                                                "session_id": st.session_state.session_id,
+                                                "message_index": i,
+                                                "original_message": message["content"][:100]
+                                            }
+                                        )
+                                        if success:
+                                            st.success("✅ 수정사항이 수집되었습니다!")
+                                            time.sleep(1)
+                                            st.rerun()
+                                        else:
+                                            st.error("❌ 수정사항 수집 실패")
+                                    else:
+                                        st.warning("수정 내용을 입력해주세요.")
         
-        # 피드백 처리 시간 분포 차트
-        fig_hist = px.histogram(df_feedback, x="response_time", 
-                               title="피드백 처리 시간 분포",
-                               labels={"response_time": "처리 시간 (초)", "count": "빈도"})
-        fig_hist.add_vline(x=5.0, line_dash="dash", line_color="red", 
-                          annotation_text="목표: 5초")
-        st.plotly_chart(fig_hist, use_container_width=True)
-        
-        # 최근 피드백 이력
-        st.subheader("📝 최근 피드백 이력")
-        recent_feedback = df_feedback.tail(10).sort_values("timestamp", ascending=False)
-        
-        for _, feedback in recent_feedback.iterrows():
-            with st.expander(f"🕒 {feedback['timestamp'].strftime('%H:%M:%S')} - {feedback['type']}"):
-                st.write(f"**내용:** {feedback['content']}")
-                st.write(f"**처리 시간:** {feedback['response_time']:.2f}초")
-                st.write(f"**적용 여부:** {'✅ 적용됨' if feedback['applied'] else '❌ 미적용'}")
+        # 채팅 입력
+        if prompt := st.chat_input("메시지를 입력하세요..."):
+            # 사용자 메시지 추가
+            st.session_state.messages.append({
+                "role": "user",
+                "content": prompt,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+            
+            # 에이전트 응답 요청
+            with st.spinner("🤔 응답을 생성하는 중..."):
+                response = self.chat_with_agent(prompt, st.session_state.agent_id, st.session_state.mode)
+            
+            if response:
+                # 어시스턴트 응답 추가
+                st.session_state.messages.append({
+                    "role": "assistant", 
+                    "content": response,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
                 
-                if feedback['optimizations']:
-                    st.write("**적용된 최적화:**")
-                    for opt in feedback['optimizations']:
-                        st.write(f"- {opt}")
-    
-    # 고급 피드백 입력
-    st.subheader("💬 상세 피드백 입력")
-    
-    feedback_type = st.selectbox("피드백 유형", [
-        "style_preference", "response_quality", "tool_performance", 
-        "workflow_efficiency", "user_experience"
-    ])
-    
-    feedback_content = st.text_area("피드백 내용", 
-                                   placeholder="구체적인 개선 사항을 설명해주세요...")
-    
-    rating = st.slider("만족도 평가", 1.0, 5.0, 3.0, 0.5)
-    
-    if st.button("🚀 피드백 제출 (5초 이내 목표)"):
-        if feedback_content:
-            send_feedback(feedback_type, feedback_content, rating)
-        else:
-            st.warning("피드백 내용을 입력해주세요.")
-    
-    # 크로스 에이전트 학습 테스트
-    st.subheader("🤝 크로스 에이전트 학습 테스트")
-    st.write("다른 세션에서 학습한 선호도가 현재 세션에 적용되는지 테스트합니다.")
-    
-    if st.button("🔄 다른 세션 선호도 동기화"):
-        # 다른 사용자 ID로 선호도 설정 후 현재 세션에 적용 테스트
-        sync_response = send_feedback("preference_sync", "다른 에이전트 학습 내용을 현재 세션에 동기화")
-        if sync_response:
-            st.success("크로스 에이전트 학습 동기화 완료!")
+                st.rerun()
+            else:
+                st.error("응답을 받을 수 없습니다. 다시 시도해주세요.")    
 
-# === 성능 대시보드 ===
-elif selected == "📊 성능 대시보드":
-    st.header("📊 시스템 성능 대시보드")
-    
-    # 자동 새로고침
-    st_autorefresh(interval=5000, key="dashboard_refresh")  # 5초마다 새로고침
-    
-    if st.session_state.performance_data:
-        df_perf = pd.DataFrame(st.session_state.performance_data)
+    def render_memory_dashboard(self):
+        """메모리 대시보드 렌더링"""
+        st.header("🧠 Memory Dashboard")
         
-        # 최근 30분 데이터만 표시
-        current_time = datetime.now()
-        df_recent = df_perf[df_perf["timestamp"] > (current_time - timedelta(minutes=30))]
+        # 메모리 통계 가져오기
+        memory_stats = self.get_memory_stats(st.session_state.agent_id)
         
-        if not df_recent.empty:
-            # 실시간 메트릭
-            st.subheader("⚡ 실시간 성능 지표")
-            
+        if memory_stats:
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                avg_processing = df_recent["processing_time"].mean()
-                st.metric("평균 처리 시간", f"{avg_processing:.2f}초",
-                         delta=f"{avg_processing - df_recent['processing_time'].iloc[0]:.2f}초")
+                st.metric("총 메모리", memory_stats.get("total_memories", 0))
             
             with col2:
-                avg_confidence = df_recent["confidence_score"].mean()
-                st.metric("평균 신뢰도", f"{avg_confidence:.1%}")
+                st.metric("메모리 저장소 사용량", f"{memory_stats.get('total_storage_used', 0)} bytes")
             
             with col3:
-                avg_tools = df_recent["tools_used"].mean()
-                st.metric("평균 도구 사용", f"{avg_tools:.1f}개")
+                working_memories = memory_stats.get('by_type', {}).get('working', 0)
+                st.metric("Working Memory", working_memories)
             
             with col4:
-                avg_memory = df_recent["memory_types"].mean()
-                st.metric("평균 메모리 활용", f"{avg_memory:.1f}개 유형")
+                episodic_memories = memory_stats.get('by_type', {}).get('episodic', 0)
+                st.metric("Episodic Memory", episodic_memories)
             
-            # 시간대별 성능 추이
-            st.subheader("📈 시간대별 성능 추이")
-            
-            # 처리 시간 추이
-            fig_time = px.line(df_recent, x="timestamp", y="processing_time", 
-                              color="mode", title="처리 시간 추이")
-            fig_time.add_hline(y=3.0, line_dash="dash", line_color="orange", 
-                              annotation_text="목표: 3초 이내")
-            st.plotly_chart(fig_time, use_container_width=True)
-            
-            # 모드별 성능 비교
-            st.subheader("🔄 모드별 성능 비교")
-            
-            mode_comparison = df_recent.groupby("mode").agg({
-                "processing_time": ["mean", "std"],
-                "confidence_score": "mean",
-                "tools_used": "mean"
-            }).round(3)
-            
+            # 메모리 타입별 분포 차트
+            if memory_stats.get('by_type'):
+                memory_types = list(memory_stats['by_type'].keys())
+                memory_counts = list(memory_stats['by_type'].values())
+                
+                fig = px.pie(
+                    values=memory_counts,
+                    names=memory_types,
+                    title="메모리 타입별 분포"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("메모리 통계를 가져올 수 없습니다.")
+    
+    def render_feedback_analytics(self):
+        """피드백 분석 렌더링"""
+        st.header("📊 Feedback Analytics")
+        
+        # 피드백 인사이트 가져오기
+        insights = self.get_feedback_insights(st.session_state.agent_id)
+        
+        if insights:
             col1, col2 = st.columns(2)
             
             with col1:
-                # 모드별 처리 시간 박스플롯
-                fig_box = px.box(df_recent, x="mode", y="processing_time", 
-                                title="모드별 처리 시간 분포")
-                st.plotly_chart(fig_box, use_container_width=True)
+                st.metric("총 피드백 수", insights.get("total_feedback_count", 0))
             
             with col2:
-                # 모드별 신뢰도 비교
-                fig_conf = px.bar(df_recent.groupby("mode")["confidence_score"].mean().reset_index(), 
-                                 x="mode", y="confidence_score", 
-                                 title="모드별 평균 신뢰도")
-                st.plotly_chart(fig_conf, use_container_width=True)
+                feedback_types = insights.get("feedback_types", {})
+                success_rate = 0
+                if feedback_types:
+                    success_count = feedback_types.get("success", 0)
+                    total_outcome = success_count + feedback_types.get("error", 0)
+                    if total_outcome > 0:
+                        success_rate = (success_count / total_outcome) * 100
+                st.metric("성공률", f"{success_rate:.1f}%")
             
-            # 성능 목표 달성 현황
-            st.subheader("🎯 성능 목표 달성 현황")
-            
-            target_col1, target_col2, target_col3 = st.columns(3)
-            
-            with target_col1:
-                # 처리 시간 목표 (3초 이내)
-                under_3s = len(df_recent[df_recent["processing_time"] < 3.0])
-                time_success_rate = (under_3s / len(df_recent) * 100)
+            # 피드백 타입별 분포
+            if feedback_types:
+                types = list(feedback_types.keys())
+                counts = list(feedback_types.values())
                 
-                fig_gauge_time = go.Figure(go.Indicator(
-                    mode = "gauge+number+delta",
-                    value = time_success_rate,
-                    domain = {'x': [0, 1], 'y': [0, 1]},
-                    title = {'text': "처리 시간 목표 달성률 (%)"},
-                    delta = {'reference': 90},
-                    gauge = {'axis': {'range': [None, 100]},
-                             'bar': {'color': "darkblue"},
-                             'steps': [    def _calculate_expected_improvements(self, optimizations: List[str]) -> Dict[str, float]:
-        """최적화로 인한 예상 개선 효과 계산"""
-        improvements = {}
+                fig = go.Figure(data=[go.Bar(x=types, y=counts)])
+                fig.update_layout(title="피드백 타입별 분포")
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("피드백 데이터를 가져올 수 없습니다.")
+    
+    def render_system_monitoring(self):
+        """시스템 모니터링 렌더링"""
+        st.header("⚡ System Monitoring")
+        
+        # 시스템 건강 상태 가져오기
+        health = self.get_system_health()
+        
+        if health:
+            # 전체 상태
+            overall_health = health.get("overall_health", "unknown")
+            if overall_health == "healthy":
+                st.success(f"✅ 시스템 상태: {overall_health}")
+            elif overall_health == "warning":
+                st.warning(f"⚠️ 시스템 상태: {overall_health}")
+            else:
+                st.error(f"❌ 시스템 상태: {overall_health}")
+            
+            # 메모리 사용량
+            memory_usage = health.get("memory_usage", {})
+            if memory_usage:
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.metric("총 메모리", memory_usage.get("total_memories", 0))
+                
+                with col2:
+                    st.metric("총 피드백", memory_usage.get("total_feedback", 0))
+            
+            # 시스템 메트릭 (있는 경우)
+            if "system_metrics" in health:
+                system_metrics = health["system_metrics"]
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    cpu_percent = system_metrics.get("cpu_percent", 0)
+                    st.metric("CPU 사용률", f"{cpu_percent:.1f}%")
+                
+                with col2:
+                    memory_percent = system_metrics.get("memory_percent", 0)
+                    st.metric("메모리 사용률", f"{memory_percent:.1f}%")
+                
+                with col3:
+                    disk_percent = system_metrics.get("disk_usage_percent", 0)
+                    st.metric("디스크 사용률", f"{disk_percent:.1f}%")
+        else:
+            st.warning("시스템 상태를 가져올 수 없습니다.")
+        
+        # 실시간 업데이트
+        if st.button("🔄 상태 새로고침"):
+            st.rerun()
+    
+    def render_optimization_tools(self):
+        """최적화 도구 렌더링"""
+        st.header("🔧 Optimization Tools")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("메모리 최적화")
+            
+            if st.button("🧹 메모리 정리"):
+                with st.spinner("메모리를 정리하는 중..."):
+                    # 최적화 API 호출 (구현 필요)
+                    time.sleep(2)  # 시뮬레이션
+                    st.success("메모리 정리가 완료되었습니다!")
+            
+            if st.button("📊 메모리 분석"):
+                st.info("메모리 분석을 시작합니다...")
+        
+        with col2:
+            st.subheader("성능 최적화")
+            
+            if st.button("⚡ 성능 튜닝"):
+                with st.spinner("성능을 최적화하는 중..."):
+                    time.sleep(3)  # 시뮬레이션
+                    st.success("성능 최적화가 완료되었습니다!")
+            
+            if st.button("📈 성능 리포트"):
+                st.info("성능 리포트를 생성합니다...")
+    
+    def _calculate_expected_improvements(self, optimizations: List[str]) -> Dict[str, float]:
+        """예상 개선 효과 계산"""
+        improvements = {
+            "response_time": 0.0,
+            "memory_usage": 0.0,
+            "accuracy": 0.0
+        }
         
         for optimization in optimizations:
-            if "속도" in optimization or "캐싱" in optimization:
-                improvements["response_time_improvement"] = improvements.get("response_time_improvement", 0) + 0.25
-                
-            elif "안정성" in optimization or "신뢰성" in optimization:
-                improvements["reliability_improvement"] = improvements.get("reliability_improvement", 0) + 0.15
-                
-            elif "정확도" in optimization or "품질" in optimization:
-                improvements["accuracy_improvement"] = improvements.get("accuracy_improvement", 0) + 0.20
-                
-            elif "만족도" in optimization or "사용자" in optimization:
-                improvements["user_satisfaction_improvement"] = improvements.get("user_satisfaction_improvement", 0) + 0.30
+            if "memory" in optimization.lower():
+                improvements["memory_usage"] += 15.0
+                improvements["response_time"] += 5.0
+            elif "performance" in optimization.lower():
+                improvements["response_time"] += 20.0
+                improvements["accuracy"] += 10.0
+            elif "cache" in optimization.lower():
+                improvements["response_time"] += 30.0
         
         return improvements
     
-    async def get_optimization_history(self, tool_type: MCPToolType = None) -> Dict[str, Any]:
-        """최적화 이력 조회"""
-        if tool_type:
-            return {
-                str(tool_type): self.optimization_history.get(tool_type, [])
-            }
-        return {str(k): v for k, v in self.optimization_history.items()}
-    
-    async def get_user_preferences(self, user_id: str) -> Dict[str, Any]:
-        """사용자 선호도 조회"""
-        # 메모리에서도 조회 (크로스 에이전트 학습용)
-        preferences, _ = await self.memory_service.get_working_memory(f"preferences_{user_id}", "shared_preferences")
+    def run(self):
+        """앱 실행"""
+        # 사이드바 네비게이션
+        with st.sidebar:
+            st.title("🤖 Agent Memory System")
+            
+            page = st.selectbox(
+                "페이지 선택",
+                ["Chat", "Memory Dashboard", "Feedback Analytics", "System Monitoring", "Optimization Tools"]
+            )
+            
+            st.divider()
+            
+            # 연결 상태 확인
+            health_check = self.make_api_request("/health")
+            if health_check:
+                st.success("✅ 백엔드 연결됨")
+            else:
+                st.error("❌ 백엔드 연결 실패")
         
-        # 현재 세션 선호도와 병합
-        current_preferences = self.user_preferences.get(user_id, {})
-        
-        return {**preferences.get("shared_preferences", {}), **current_preferences}
+        # 메인 콘텐츠 렌더링
+        if page == "Chat":
+            self.render_chat_interface()
+        elif page == "Memory Dashboard":
+            self.render_memory_dashboard()
+        elif page == "Feedback Analytics":
+            self.render_feedback_analytics()
+        elif page == "System Monitoring":
+            self.render_system_monitoring()
+        elif page == "Optimization Tools":
+            self.render_optimization_tools()
+
+def main():
+    """메인 함수"""
+    app = AgentMemoryApp()
+    app.run()
+
+if __name__ == "__main__":
+    main()
