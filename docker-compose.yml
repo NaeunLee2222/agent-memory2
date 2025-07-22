@@ -327,6 +327,22 @@ services:
     devices:
       - /dev/kmsg
 
+  mcp-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mcp
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./mcp_tools:/app/tools
+      
+  # mongodb:
+  #   image: mongo:7
+  #   ports:
+  #     - "27017:27017"
+  #   volumes:
+  #     - mongodb_data:/data/db
+
 volumes:
   redis_data:
   chroma_data:
