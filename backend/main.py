@@ -1,630 +1,395 @@
-# backend/main.py - 최소 기능으로 수정
-
-from fastapi import FastAPI, HTTPException, Query, Path
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
-from typing import Dict, List, Any, Optional
-import logging
-from datetime import datetime
+from typing import Dict, List, Optional, Union
 import asyncio
-import os
 import json
+import uuid
+from datetime import datetime
+import logging
 
-# 기본 로깅 설정
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# 기존 메모리 시스템 및 피드백 모듈 (이미 구현되어 있다고 가정)
+from memory.working_memory import WorkingMemoryManager
+from memory.episodic_memory import EpisodicMemoryManager
+from memory.semantic_memory import SemanticMemoryManager
+from memory.procedural_memory import ProceduralMemoryManager
+from feedback.collector import FeedbackCollector
+from feedback.processor import FeedbackProcessor
 
-# 임시 데이터 저장소 (실제로는 데이터베이스 사용)
-memory_store = {}
-feedback_store = {}
+# MCP 도구 연결 모듈
+from mcp.connector import MCPConnector
+from mcp.tool_registry import ToolRegistry
 
-# 피드백 요청 모델
-class FeedbackRequest(BaseModel):
-    agent_id: str
-    feedback_type: str
-    content: str
-    metadata: Optional[Dict[str, Any]] = None
-    context: Optional[Dict[str, Any]] = None
+# 에이전트 핵심 로직 모듈
+from agent.planner import AgenticPlanner
+from agent.executor import AgenticExecutor
+from agent.reasoner import AgenticReasoner
 
-# 메모리 저장 요청 모델
-class MemoryStoreRequest(BaseModel):
-    memory_type: str
-    content: Dict[str, Any]
-    agent_id: str
-    context: Optional[Dict[str, Any]] = None
-    metadata: Optional[Dict[str, Any]] = None
+app = FastAPI(title="Agentic AI Platform")
 
-# 모델 임포트 (절대 경로)
-try:
-    from models.memory import MemoryType, MemoryData
-    from models.feedback import FeedbackType, FeedbackData
-    from models.agent import AgentRequest, AgentResponse, AgentMode
-    logger.info("Models imported successfully")
-except ImportError as e:
-    logger.error(f"Failed to import models: {e}")
-    # 임포트 실패 시 기본 클래스들 정의
-    from pydantic import BaseModel
-    from enum import Enum
+# Request/Response 모델
+class ChatRequest(BaseModel):
+    message: str
+    user_id: str
+    mode: str = "basic"  # "basic" or "flow"
+    session_id: Optional[str] = None
+
+class ChatResponse(BaseModel):
+    response: str
+    session_id: str
+    execution_trace: List[Dict]
+    metadata: Dict
+
+class AgenticAIBackend:
+    def __init__(self):
+        # 메모리 시스템 초기화
+        self.working_memory = WorkingMemoryManager()
+        self.episodic_memory = EpisodicMemoryManager()
+        self.semantic_memory = SemanticMemoryManager()
+        self.procedural_memory = ProceduralMemoryManager()
+        
+        # 피드백 시스템 초기화
+        self.feedback_collector = FeedbackCollector()
+        self.feedback_processor = FeedbackProcessor()
+        
+        # MCP 도구 시스템 초기화
+        self.mcp_connector = MCPConnector()
+        self.tool_registry = ToolRegistry()
+        
+        # 에이전트 핵심 로직 초기화
+        self.planner = AgenticPlanner(self.semantic_memory, self.procedural_memory)
+        self.executor = AgenticExecutor(self.mcp_connector, self.working_memory)
+        self.reasoner = AgenticReasoner(self.episodic_memory, self.semantic_memory)
+        
+        # 사용 가능한 도구들 등록
+        self._register_available_tools()
     
-    class MemoryType(str, Enum):
-        WORKING = "working"
-        EPISODIC = "episodic"
-        SEMANTIC = "semantic"
-        PROCEDURAL = "procedural"
+    def _register_available_tools(self):
+        """사용 가능한 MCP 도구들을 등록"""
+        available_tools = [
+            {
+                "name": "create_rfq_cover",
+                "description": "RFQ 커버 페이지 생성",
+                "category": "document_generation",
+                "parameters": {
+                    "company_name": "str",
+                    "project_title": "str", 
+                    "deadline": "str"
+                }
+            },
+            {
+                "name": "combine_rfq_cover", 
+                "description": "RFQ 문서들을 결합",
+                "category": "document_processing",
+                "parameters": {
+                    "documents": "list",
+                    "output_format": "str"
+                }
+            },
+            {
+                "name": "modify_tbe_content",
+                "description": "TBE 콘텐츠 수정",
+                "category": "content_editing",
+                "parameters": {
+                    "content": "str",
+                    "modifications": "list"
+                }
+            },
+            {
+                "name": "search_database",
+                "description": "데이터베이스 검색",
+                "category": "data_retrieval",
+                "parameters": {
+                    "query": "str",
+                    "filters": "dict"
+                }
+            },
+            {
+                "name": "send_slack_message",
+                "description": "슬랙 메시지 전송",
+                "category": "communication",
+                "parameters": {
+                    "channel": "str",
+                    "message": "str",
+                    "mentions": "list"
+                }
+            }
+        ]
+        
+        for tool in available_tools:
+            self.tool_registry.register_tool(tool)
     
-    class FeedbackType(str, Enum):
-        SUCCESS = "success"
-        ERROR = "error"
-        USER_CORRECTION = "user_correction"
-        PERFORMANCE = "performance"
-        OPTIMIZATION = "optimization"
+    async def process_request(self, request: ChatRequest) -> ChatResponse:
+        """메인 요청 처리 로직"""
+        try:
+            # 1. 세션 관리
+            session_id = request.session_id or str(uuid.uuid4())
+            
+            # 2. Working Memory에 요청 컨텍스트 저장
+            context = await self._create_request_context(request, session_id)
+            
+            # 3. 요청 분석 및 의도 파악
+            analyzed_request = await self.reasoner.analyze_request(
+                request.message, context
+            )
+            
+            # 4. 모드에 따른 실행
+            if request.mode == "flow":
+                response = await self._execute_flow_mode(analyzed_request, session_id)
+            else:
+                response = await self._execute_basic_mode(analyzed_request, session_id)
+            
+            # 5. 실행 결과를 에피소드 메모리에 저장
+            await self._store_execution_episode(session_id, request, response)
+            
+            return response
+            
+        except Exception as e:
+            logging.error(f"Request processing error: {str(e)}")
+            # 에러 피드백 수집
+            await self.feedback_collector.collect_error_feedback(
+                session_id, str(e), request.message
+            )
+            raise HTTPException(status_code=500, detail=str(e))
     
-    class AgentMode(str, Enum):
-        FLOW = "flow"
-        BASIC = "basic"
+    async def _create_request_context(self, request: ChatRequest, session_id: str) -> Dict:
+        """요청 컨텍스트 생성"""
+        context = {
+            "session_id": session_id,
+            "user_id": request.user_id,
+            "mode": request.mode,
+            "original_message": request.message,
+            "timestamp": datetime.utcnow().isoformat(),
+            "available_tools": self.tool_registry.get_all_tools()
+        }
+        
+        # Working Memory에 컨텍스트 저장
+        await self.working_memory.store_context(session_id, context)
+        
+        return context
     
-    class AgentRequest(BaseModel):
-        agent_id: str
-        message: str
-        mode: AgentMode = AgentMode.BASIC
-        session_id: Optional[str] = None
+    async def _execute_flow_mode(self, analyzed_request: Dict, session_id: str) -> ChatResponse:
+        """플로우 모드: 단계별 계획 수립 및 실행"""
+        
+        # 1. 복합 작업을 단계별로 분해
+        execution_plan = await self.planner.create_execution_plan(
+            analyzed_request["intent"],
+            analyzed_request["entities"],
+            analyzed_request["requirements"]
+        )
+        
+        # 2. 각 단계별 실행
+        execution_trace = []
+        final_results = []
+        
+        for step in execution_plan["steps"]:
+            step_result = await self._execute_step(step, session_id)
+            execution_trace.append(step_result)
+            
+            # 단계 실행 후 Working Memory 업데이트
+            await self.working_memory.update_step_result(
+                session_id, step["step_id"], step_result
+            )
+            
+            if step_result["success"]:
+                final_results.append(step_result["output"])
+            else:
+                # 실패 시 대안 단계 시도
+                alternative_step = await self.planner.find_alternative_step(
+                    step, step_result["error"]
+                )
+                if alternative_step:
+                    alt_result = await self._execute_step(alternative_step, session_id)
+                    execution_trace.append(alt_result)
+                    if alt_result["success"]:
+                        final_results.append(alt_result["output"])
+        
+        # 3. 최종 결과 합성
+        synthesized_response = await self._synthesize_results(final_results, execution_plan)
+        
+        return ChatResponse(
+            response=synthesized_response,
+            session_id=session_id,
+            execution_trace=execution_trace,
+            metadata={
+                "mode": "flow",
+                "steps_executed": len(execution_trace),
+                "success_rate": sum(1 for t in execution_trace if t["success"]) / len(execution_trace),
+                "execution_plan": execution_plan
+            }
+        )
     
-    class AgentResponse(BaseModel):
-        agent_id: str
-        response: str
-        timestamp: datetime
-        processing_time: float
-        mode: AgentMode
+    async def _execute_basic_mode(self, analyzed_request: Dict, session_id: str) -> ChatResponse:
+        """기본 모드: 자율적 도구 선택 및 실행"""
+        
+        # 1. 과거 유사한 경험 검색
+        similar_episodes = await self.episodic_memory.find_similar_episodes(
+            analyzed_request["intent"], limit=3
+        )
+        
+        # 2. 최적 도구 선택
+        selected_tools = await self.reasoner.select_optimal_tools(
+            analyzed_request["intent"],
+            analyzed_request["entities"], 
+            similar_episodes,
+            self.tool_registry.get_all_tools()
+        )
+        
+        # 3. 도구 실행
+        execution_trace = []
+        results = []
+        
+        for tool_config in selected_tools:
+            tool_result = await self.executor.execute_tool(
+                tool_config["name"],
+                tool_config["parameters"],
+                session_id
+            )
+            
+            execution_trace.append({
+                "tool": tool_config["name"],
+                "parameters": tool_config["parameters"],
+                "result": tool_result,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+            if tool_result["success"]:
+                results.append(tool_result["output"])
+        
+        # 4. 결과 합성
+        final_response = await self._synthesize_basic_results(results, analyzed_request)
+        
+        return ChatResponse(
+            response=final_response,
+            session_id=session_id,
+            execution_trace=execution_trace,
+            metadata={
+                "mode": "basic",
+                "tools_used": len(selected_tools),
+                "success_rate": sum(1 for t in execution_trace if t["result"]["success"]) / len(execution_trace) if execution_trace else 0
+            }
+        )
+    
+    async def _execute_step(self, step: Dict, session_id: str) -> Dict:
+        """단일 단계 실행"""
+        try:
+            # 단계에서 지정된 도구 실행
+            tool_result = await self.executor.execute_tool(
+                step["tool"],
+                step["parameters"],
+                session_id
+            )
+            
+            # 피드백 수집
+            await self.feedback_collector.collect_step_feedback(
+                session_id, step["step_id"], tool_result
+            )
+            
+            return {
+                "step_id": step["step_id"],
+                "tool": step["tool"],
+                "success": tool_result["success"],
+                "output": tool_result.get("output"),
+                "error": tool_result.get("error"),
+                "execution_time": tool_result.get("execution_time", 0),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+        except Exception as e:
+            return {
+                "step_id": step["step_id"],
+                "tool": step["tool"],
+                "success": False,
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+    
+    async def _synthesize_results(self, results: List, execution_plan: Dict) -> str:
+        """플로우 모드 결과 합성"""
+        if not results:
+            return "요청을 처리할 수 없었습니다. 다시 시도해 주세요."
+        
+        # 결과들을 논리적으로 조합
+        if execution_plan["goal_type"] == "document_generation":
+            return f"요청하신 문서 작업을 완료했습니다. {len(results)}개의 단계를 거쳐 처리되었습니다."
+        elif execution_plan["goal_type"] == "data_processing":
+            return f"데이터 처리가 완료되었습니다. 총 {len(results)}개의 작업이 수행되었습니다."
+        elif execution_plan["goal_type"] == "communication":
+            return f"메시지 전송이 완료되었습니다."
+        else:
+            return f"요청하신 작업을 완료했습니다. {len(results)}개의 단계가 성공적으로 처리되었습니다."
+    
+    async def _synthesize_basic_results(self, results: List, analyzed_request: Dict) -> str:
+        """기본 모드 결과 합성"""
+        if not results:
+            return "요청을 처리할 수 없었습니다. 사용 가능한 도구로 처리할 수 없는 요청입니다."
+        
+        intent = analyzed_request.get("intent", "unknown")
+        
+        if "문서" in intent or "document" in intent.lower():
+            return f"문서 관련 작업이 완료되었습니다. {len(results)}개의 도구를 사용하여 처리했습니다."
+        elif "검색" in intent or "search" in intent.lower():
+            return f"검색이 완료되었습니다. 요청하신 정보를 찾았습니다."
+        elif "메시지" in intent or "message" in intent.lower():
+            return f"메시지 전송이 완료되었습니다."
+        else:
+            return f"요청하신 '{intent}' 작업이 완료되었습니다."
+    
+    async def _store_execution_episode(self, session_id: str, request: ChatRequest, response: ChatResponse):
+        """실행 에피소드를 메모리에 저장"""
+        episode_data = {
+            "session_id": session_id,
+            "user_id": request.user_id,
+            "mode": request.mode,
+            "original_request": request.message,
+            "response": response.response,
+            "execution_trace": response.execution_trace,
+            "success": response.metadata.get("success_rate", 0) > 0.5,
+            "timestamp": datetime.utcnow().isoformat(),
+            "tools_used": [trace.get("tool") for trace in response.execution_trace if trace.get("tool")],
+            "performance_metrics": {
+                "response_length": len(response.response),
+                "steps_count": len(response.execution_trace),
+                "success_rate": response.metadata.get("success_rate", 0)
+            }
+        }
+        
+        await self.episodic_memory.store_episode(episode_data)
 
-# FastAPI 앱 생성
-app = FastAPI(
-    title="Agent Memory & Feedback System",
-    description="Enhanced Agentic AI Platform with Memory and Feedback Loop",
-    version="1.0.0"
-)
+# 전역 백엔드 인스턴스
+backend = AgenticAIBackend()
 
-# CORS 설정
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# 임시 데이터 저장소 (실제로는 데이터베이스 사용)
-memory_store = {}
-feedback_store = {}
-
-@app.get("/")
-async def root():
-    """루트 엔드포인트"""
-    return {
-        "message": "Agent Memory & Feedback System API",
-        "version": "1.0.0",
-        "status": "running",
-        "timestamp": datetime.utcnow().isoformat()
-    }
+@app.post("/chat", response_model=ChatResponse)
+async def chat_endpoint(request: ChatRequest):
+    """메인 채팅 엔드포인트"""
+    return await backend.process_request(request)
 
 @app.get("/health")
 async def health_check():
     """헬스 체크 엔드포인트"""
-    try:
-        return {
-            "status": "healthy",
-            "timestamp": datetime.utcnow().isoformat(),
-            "services": {
-                "api": True,
-                "memory_store": len(memory_store),
-                "feedback_store": len(feedback_store)
-            }
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "components": {
+            "working_memory": await backend.working_memory.health_check(),
+            "episodic_memory": await backend.episodic_memory.health_check(),
+            "semantic_memory": await backend.semantic_memory.health_check(),
+            "mcp_connector": await backend.mcp_connector.health_check()
         }
-    except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "unhealthy",
-                "error": str(e),
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        )
+    }
 
-@app.post("/api/v1/agents/chat")
-async def chat_with_agent(request: AgentRequest):
-    """에이전트와 채팅 (기본 구현)"""
-    try:
-        start_time = datetime.utcnow()
-        
-        # 기본 응답 생성
-        response_content = f"Echo: {request.message}" # 수정 필요
-        
-        processing_time = (datetime.utcnow() - start_time).total_seconds()
-        
-        response = AgentResponse(
-            agent_id=request.agent_id,
-            response=response_content,
-            timestamp=datetime.utcnow(),
-            processing_time=processing_time,
-            mode=request.mode
-        )
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"Error in agent chat: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/v1/memory/store")
-async def store_memory(request: MemoryStoreRequest):
-    """메모리 저장 (JSON body 방식)"""
-    try:
-        memory_id = f"{request.agent_id}_{len(memory_store)}"
-        
-        memory_data = {
-            "memory_id": memory_id,
-            "memory_type": request.memory_type,
-            "content": request.content,
-            "agent_id": request.agent_id,
-            "context": request.context or {},
-            "metadata": request.metadata or {},
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-        memory_store[memory_id] = memory_data
-        
-        return {"memory_id": memory_id, "status": "stored"}
-        
-    except Exception as e:
-        logger.error(f"Error storing memory: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/memory/{agent_id}")
-async def get_memories(
-    agent_id: str = Path(..., description="Agent ID"),
-    memory_type: Optional[str] = Query(None, description="Memory type filter"),
-    limit: Optional[int] = Query(10, description="Maximum number of memories to return")
-):
-    """에이전트의 메모리 조회"""
-    try:
-        agent_memories = []
-        
-        for memory_id, memory_data in memory_store.items():
-            if memory_data["agent_id"] == agent_id:
-                if memory_type is None or memory_data["memory_type"] == memory_type:
-                    agent_memories.append(memory_data)
-        
-        # 최신 순으로 정렬
-        agent_memories.sort(key=lambda x: x["timestamp"], reverse=True)
-        
-        if limit:
-            agent_memories = agent_memories[:limit]
-        
-        return {"memories": agent_memories, "count": len(agent_memories)}
-        
-    except Exception as e:
-        logger.error(f"Error retrieving memories: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/feedback")
+async def submit_feedback(session_id: str, rating: int, comments: str = ""):
+    """사용자 피드백 수집"""
+    feedback_data = {
+        "session_id": session_id,
+        "rating": rating,
+        "comments": comments,
+        "timestamp": datetime.utcnow().isoformat()
+    }
     
-@app.get("/api/v1/memory/{agent_id}/stats")
-async def get_memory_stats(agent_id: str = Path(..., description="Agent ID")):
-    """에이전트의 메모리 통계 조회"""
-    try:
-        agent_memories = []
-        
-        # 해당 에이전트의 모든 메모리 수집
-        for memory_id, memory_data in memory_store.items():
-            if memory_data["agent_id"] == agent_id:
-                agent_memories.append(memory_data)
-        
-        # 통계 계산
-        total_memories = len(agent_memories)
-        by_type = {}
-        total_storage_used = 0
-        
-        for memory in agent_memories:
-            memory_type = memory["memory_type"]
-            if memory_type not in by_type:
-                by_type[memory_type] = 0
-            by_type[memory_type] += 1
-            
-            # 대략적인 크기 계산 (JSON 직렬화 크기)
-            content_size = len(json.dumps(memory["content"], default=str))
-            total_storage_used += content_size
-        
-        # 평균 크기 계산
-        avg_memory_size = total_storage_used / total_memories if total_memories > 0 else 0
-        
-        stats = {
-            "agent_id": agent_id,
-            "total_memories": total_memories,
-            "by_type": by_type,
-            "total_storage_used": total_storage_used,
-            "avg_memory_size": avg_memory_size,
-            "memory_types": list(by_type.keys()),
-            "last_updated": datetime.utcnow().isoformat()
-        }
-        
-        return stats
-        
-    except Exception as e:
-        logger.error(f"Error getting memory stats: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-    
-@app.get("/api/v1/memory/{agent_id}/search")
-async def search_memories(
-    agent_id: str = Path(..., description="Agent ID"),
-    query: str = Query(..., description="Search query"),
-    memory_types: Optional[List[str]] = Query(None, description="Memory types to search"),
-    limit: Optional[int] = Query(10, description="Maximum results")
-):
-    """메모리 검색"""
-    try:
-        agent_memories = []
-        
-        # 해당 에이전트의 메모리 수집
-        for memory_id, memory_data in memory_store.items():
-            if memory_data["agent_id"] == agent_id:
-                if memory_types is None or memory_data["memory_type"] in memory_types:
-                    agent_memories.append(memory_data)
-        
-        # 간단한 텍스트 검색 (실제로는 벡터 검색 사용)
-        query_lower = query.lower()
-        matched_memories = []
-        
-        for memory in agent_memories:
-            content_str = json.dumps(memory["content"], default=str).lower()
-            if query_lower in content_str:
-                matched_memories.append(memory)
-        
-        # 최신 순으로 정렬
-        matched_memories.sort(key=lambda x: x["timestamp"], reverse=True)
-        
-        if limit:
-            matched_memories = matched_memories[:limit]
-        
-        return {"results": matched_memories, "count": len(matched_memories)}
-        
-    except Exception as e:
-        logger.error(f"Error searching memories: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/v1/feedback/collect")
-async def collect_feedback(feedback_request: FeedbackRequest):
-    """피드백 수집 (JSON body 방식)"""
-    try:
-        feedback_id = f"{feedback_request.agent_id}_{len(feedback_store)}"
-        
-        feedback_data = {
-            "feedback_id": feedback_id,
-            "agent_id": feedback_request.agent_id,
-            "feedback_type": feedback_request.feedback_type,
-            "content": feedback_request.content,
-            "metadata": feedback_request.metadata or {},
-            "context": feedback_request.context or {},
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-        feedback_store[feedback_id] = feedback_data
-        
-        return {"feedback_id": feedback_id, "status": "collected"}
-        
-    except Exception as e:
-        logger.error(f"Error collecting feedback: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-    
-@app.post("/api/v1/feedback/collect-alt")
-async def collect_feedback_alt(
-    agent_id: str = Query(..., description="Agent ID"),
-    feedback_type: str = Query(..., description="Feedback type"),
-    content: str = Query(..., description="Feedback content"),
-    metadata: Optional[str] = Query(None, description="Metadata as JSON string"),
-    context: Optional[str] = Query(None, description="Context as JSON string")
-):
-    """피드백 수집 (Query parameter 방식 - 대안)"""
-    try:
-        import json
-        
-        # JSON 문자열 파싱
-        parsed_metadata = {}
-        parsed_context = {}
-        
-        if metadata:
-            try:
-                parsed_metadata = json.loads(metadata)
-            except json.JSONDecodeError:
-                parsed_metadata = {"raw": metadata}
-        
-        if context:
-            try:
-                parsed_context = json.loads(context)
-            except json.JSONDecodeError:
-                parsed_context = {"raw": context}
-        
-        feedback_id = f"{agent_id}_{len(feedback_store)}"
-        
-        feedback_data = {
-            "feedback_id": feedback_id,
-            "agent_id": agent_id,
-            "feedback_type": feedback_type,
-            "content": content,
-            "metadata": parsed_metadata,
-            "context": parsed_context,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-        feedback_store[feedback_id] = feedback_data
-        
-        return {"feedback_id": feedback_id, "status": "collected"}
-        
-    except Exception as e:
-        logger.error(f"Error collecting feedback: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/feedback/{agent_id}/insights")
-async def get_feedback_insights(
-    agent_id: str = Path(..., description="Agent ID"),
-    time_range_hours: Optional[int] = Query(24, description="Time range in hours")
-):
-    """피드백 인사이트 조회"""
-    try:
-        agent_feedback = []
-        
-        # 해당 에이전트의 피드백 수집
-        for feedback_id, feedback_data in feedback_store.items():
-            if feedback_data["agent_id"] == agent_id:
-                agent_feedback.append(feedback_data)
-        
-        # 피드백 타입별 집계
-        feedback_types = {}
-        for feedback in agent_feedback:
-            feedback_type = feedback["feedback_type"]
-            if feedback_type not in feedback_types:
-                feedback_types[feedback_type] = 0
-            feedback_types[feedback_type] += 1
-        
-        # 성공률 계산
-        success_count = feedback_types.get("success", 0)
-        error_count = feedback_types.get("error", 0)
-        total_outcome_feedback = success_count + error_count
-        
-        success_rate = 0.0
-        if total_outcome_feedback > 0:
-            success_rate = success_count / total_outcome_feedback
-        
-        insights = {
-            "agent_id": agent_id,
-            "total_feedback_count": len(agent_feedback),
-            "feedback_types": feedback_types,
-            "success_rate": success_rate,
-            "time_range_hours": time_range_hours,
-            "last_updated": datetime.utcnow().isoformat()
-        }
-        
-        return insights
-        
-    except Exception as e:
-        logger.error(f"Error getting feedback insights: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/performance/system")
-async def get_system_performance():
-    """시스템 성능 정보 조회 (기본 구현)"""
-    try:
-        # 간단한 시스템 메트릭 시뮬레이션
-        import psutil
-        import random
-        
-        system_metrics = {
-            "cpu_percent": psutil.cpu_percent(interval=0.1),
-            "memory_percent": psutil.virtual_memory().percent,
-            "disk_usage_percent": psutil.disk_usage('/').percent if hasattr(psutil, 'disk_usage') else random.uniform(20, 60),
-            "available_memory_mb": psutil.virtual_memory().available / (1024 * 1024),
-        }
-        
-        return {
-            "overall_health": "healthy" if system_metrics["cpu_percent"] < 80 else "warning",
-            "system_metrics": system_metrics,
-            "memory_usage": {
-                "total_memories": len(memory_store),
-                "total_feedback": len(feedback_store)
-            },
-            "uptime_hours": random.uniform(1, 24),  # 시뮬레이션
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Error getting system performance: {str(e)}")
-        # psutil이 없는 경우 시뮬레이션 데이터 반환
-        return {
-            "overall_health": "healthy",
-            "system_metrics": {
-                "cpu_percent": random.uniform(10, 50),
-                "memory_percent": random.uniform(30, 70),
-                "disk_usage_percent": random.uniform(20, 60),
-                "available_memory_mb": random.uniform(1000, 4000),
-            },
-            "memory_usage": {
-                "total_memories": len(memory_store),
-                "total_feedback": len(feedback_store)
-            },
-            "uptime_hours": random.uniform(1, 24),
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    
-@app.get("/api/v1/performance/agents")
-async def get_all_agents_performance():
-    """모든 에이전트 성능 정보 조회"""
-    try:
-        # 모든 에이전트 ID 수집
-        agent_ids = set()
-        for memory in memory_store.values():
-            agent_ids.add(memory["agent_id"])
-        for feedback in feedback_store.values():
-            agent_ids.add(feedback["agent_id"])
-        
-        agents_performance = {}
-        
-        for agent_id in agent_ids:
-            # 각 에이전트의 메모리 및 피드백 통계
-            agent_memories = [m for m in memory_store.values() if m["agent_id"] == agent_id]
-            agent_feedbacks = [f for f in feedback_store.values() if f["agent_id"] == agent_id]
-            
-            success_count = len([f for f in agent_feedbacks if f["feedback_type"] == "success"])
-            error_count = len([f for f in agent_feedbacks if f["feedback_type"] == "error"])
-            total_outcome = success_count + error_count
-            
-            agents_performance[agent_id] = {
-                "agent_id": agent_id,
-                "total_memories": len(agent_memories),
-                "total_feedback": len(agent_feedbacks),
-                "success_rate": success_count / total_outcome if total_outcome > 0 else 0,
-                "health_status": "healthy" if success_count >= error_count else "warning",
-                "last_activity": max([m["timestamp"] for m in agent_memories] + [f["timestamp"] for f in agent_feedbacks]) if (agent_memories or agent_feedbacks) else None
-            }
-        
-        return agents_performance
-        
-    except Exception as e:
-        logger.error(f"Error getting agents performance: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/memory/metrics")
-async def get_memory_metrics():
-    """메모리 시스템 메트릭 (Prometheus 호환)"""
-    try:
-        metrics_output = []
-        
-        # 메모리 관련 메트릭
-        metrics_output.append("# HELP memory_total_count Total number of stored memories")
-        metrics_output.append("# TYPE memory_total_count gauge")
-        metrics_output.append(f"memory_total_count {len(memory_store)}")
-        
-        # 에이전트별 메모리 수
-        agent_memory_counts = {}
-        for memory in memory_store.values():
-            agent_id = memory["agent_id"]
-            agent_memory_counts[agent_id] = agent_memory_counts.get(agent_id, 0) + 1
-        
-        metrics_output.append("# HELP memory_count_by_agent Memory count per agent")
-        metrics_output.append("# TYPE memory_count_by_agent gauge")
-        for agent_id, count in agent_memory_counts.items():
-            metrics_output.append(f'memory_count_by_agent{{agent_id="{agent_id}"}} {count}')
-        
-        return "\n".join(metrics_output)
-        
-    except Exception as e:
-        logger.error(f"Error generating memory metrics: {str(e)}")
-        return f"# Error: {str(e)}\n"
-
-@app.get("/api/v1/feedback/metrics")
-async def get_feedback_metrics():
-    """피드백 시스템 메트릭 (Prometheus 호환)"""
-    try:
-        metrics_output = []
-        
-        # 피드백 관련 메트릭
-        metrics_output.append("# HELP feedback_total_count Total number of collected feedback")
-        metrics_output.append("# TYPE feedback_total_count gauge")
-        metrics_output.append(f"feedback_total_count {len(feedback_store)}")
-        
-        # 피드백 타입별 집계
-        feedback_type_counts = {}
-        for feedback in feedback_store.values():
-            feedback_type = feedback["feedback_type"]
-            feedback_type_counts[feedback_type] = feedback_type_counts.get(feedback_type, 0) + 1
-        
-        metrics_output.append("# HELP feedback_count_by_type Feedback count by type")
-        metrics_output.append("# TYPE feedback_count_by_type gauge")
-        for feedback_type, count in feedback_type_counts.items():
-            metrics_output.append(f'feedback_count_by_type{{type="{feedback_type}"}} {count}')
-        
-        return "\n".join(metrics_output)
-        
-    except Exception as e:
-        logger.error(f"Error generating feedback metrics: {str(e)}")
-        return f"# Error: {str(e)}\n"
-    
-@app.get("/api/v1/performance/metrics")
-async def get_performance_metrics(
-    time_range_hours: Optional[int] = Query(1, description="Time range in hours"),
-    agent_id: Optional[str] = Query(None, description="Filter by agent ID")
-):
-    """성능 메트릭 조회"""
-    try:
-        import random
-        
-        metrics = {
-            "time_range_hours": time_range_hours,
-            "agent_id": agent_id,
-            "metrics": {
-                "response_time": {
-                    "avg": random.uniform(0.5, 2.0),
-                    "max": random.uniform(2.0, 5.0),
-                    "min": random.uniform(0.1, 0.5),
-                    "count": len(memory_store) + len(feedback_store)
-                },
-                "throughput": {
-                    "requests_per_minute": random.uniform(10, 100),
-                    "successful_requests": random.randint(90, 100),
-                    "failed_requests": random.randint(0, 10)
-                }
-            },
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-        return metrics
-        
-    except Exception as e:
-        logger.error(f"Error getting performance metrics: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/metrics")
-async def prometheus_metrics():
-    """Prometheus 메트릭 엔드포인트"""
-    try:
-        metrics_output = []
-        
-        # 기본 메트릭들
-        metrics_output.append("# HELP agent_requests_total Total number of agent requests")
-        metrics_output.append("# TYPE agent_requests_total counter")
-        metrics_output.append(f"agent_requests_total {len(memory_store) + len(feedback_store)}")
-        
-        metrics_output.append("# HELP agent_memory_count Number of stored memories")
-        metrics_output.append("# TYPE agent_memory_count gauge")
-        metrics_output.append(f"agent_memory_count {len(memory_store)}")
-        
-        metrics_output.append("# HELP agent_feedback_count Number of collected feedback")
-        metrics_output.append("# TYPE agent_feedback_count gauge")
-        metrics_output.append(f"agent_feedback_count {len(feedback_store)}")
-        
-        return "\n".join(metrics_output)
-        
-    except Exception as e:
-        logger.error(f"Error generating Prometheus metrics: {str(e)}")
-        return f"# Error: {str(e)}\n"
-
-# 에러 핸들러
-@app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
-    """전역 예외 핸들러"""
-    logger.error(f"Unhandled exception: {str(exc)}")
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "Internal server error",
-            "message": str(exc),
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    )
+    await backend.feedback_collector.collect_user_feedback(feedback_data)
+    return {"status": "feedback_received"}
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        log_level="info"
-    )
+    uvicorn.run(app, host="0.0.0.0", port=8000)
