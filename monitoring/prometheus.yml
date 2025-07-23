@@ -1,106 +1,130 @@
-# monitoring/prometheus.yml - 포트 수정된 버전
+# # monitoring/prometheus.yml - 포트 수정된 버전
 
+# global:
+#   scrape_interval: 15s
+#   evaluation_interval: 15s
+#   scrape_timeout: 10s
+
+# # Rule files
+# rule_files:
+#   - "rules/*.yml"
+
+# # Alertmanager configuration
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#           - alertmanager:9093
+
+# # Scrape configurations
+# scrape_configs:
+#   # Prometheus 자체 모니터링
+#   - job_name: 'prometheus'
+#     scrape_interval: 30s
+#     static_configs:
+#       - targets: ['localhost:9090']
+
+#   # Agent Memory Backend API 모니터링 (포트 8100으로 수정)
+#   - job_name: 'agent-memory-backend'
+#     scrape_interval: 10s
+#     scrape_timeout: 5s
+#     static_configs:
+#       - targets: ['backend:8000']  # 내부 포트는 8000
+#     metrics_path: /metrics
+#     honor_labels: true
+
+#   # Frontend 애플리케이션 모니터링
+#   - job_name: 'agent-memory-frontend'
+#     scrape_interval: 30s
+#     static_configs:
+#       - targets: ['frontend:8501']
+#     metrics_path: /metrics
+#     honor_labels: true
+
+#   # Redis 모니터링
+#   - job_name: 'redis'
+#     scrape_interval: 15s
+#     static_configs:
+#       - targets: ['redis:6379']  # 내부 포트는 6379
+#     metrics_path: /metrics
+
+#   # Neo4j 모니터링
+#   - job_name: 'neo4j'
+#     scrape_interval: 30s
+#     static_configs:
+#       - targets: ['neo4j:2004']
+#     metrics_path: /metrics
+#     basic_auth:
+#       username: 'neo4j'
+#       password: 'testpassword'
+
+#   # ChromaDB 모니터링
+#   - job_name: 'chromadb'
+#     scrape_interval: 30s
+#     static_configs:
+#       - targets: ['chroma:8000']  # 내부 포트는 8000
+#     metrics_path: /api/v1/heartbeat
+
+#   # Node Exporter (시스템 메트릭)
+#   - job_name: 'node-exporter'
+#     scrape_interval: 15s
+#     static_configs:
+#       - targets: ['node-exporter:9100']
+
+#   # cAdvisor (컨테이너 메트릭)
+#   - job_name: 'cadvisor'
+#     scrape_interval: 15s
+#     static_configs:
+#       - targets: ['cadvisor:8080']
+
+#   # Agent 성능 메트릭
+#   - job_name: 'agent-performance'
+#     scrape_interval: 10s
+#     static_configs:
+#       - targets: ['backend:8000']
+#     metrics_path: /api/v1/performance/metrics
+
+#   # Memory System 메트릭
+#   - job_name: 'memory-system'
+#     scrape_interval: 15s
+#     static_configs:
+#       - targets: ['backend:8000']
+#     metrics_path: /api/v1/memory/metrics
+
+#   # Feedback System 메트릭
+#   - job_name: 'feedback-system'
+#     scrape_interval: 20s
+#     static_configs:
+#       - targets: ['backend:8000']
+#     metrics_path: /api/v1/feedback/metrics
+
+#   # MCP Tools 모니터링
+#   - job_name: 'mcp-tools'
+#     scrape_interval: 15s
+#     static_configs:
+#       - targets: ['backend:8000']
+#     metrics_path: /api/v1/mcp/metrics
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
-  scrape_timeout: 10s
 
-# Rule files
 rule_files:
   - "rules/*.yml"
 
-# Alertmanager configuration
-alerting:
-  alertmanagers:
-    - static_configs:
-        - targets:
-          - alertmanager:9093
-
-# Scrape configurations
 scrape_configs:
-  # Prometheus 자체 모니터링
   - job_name: 'prometheus'
-    scrape_interval: 30s
     static_configs:
       - targets: ['localhost:9090']
 
-  # Agent Memory Backend API 모니터링 (포트 8100으로 수정)
-  - job_name: 'agent-memory-backend'
-    scrape_interval: 10s
-    scrape_timeout: 5s
+  - job_name: 'backend'
     static_configs:
-      - targets: ['backend:8000']  # 내부 포트는 8000
-    metrics_path: /metrics
-    honor_labels: true
+      - targets: ['backend:8000']
+    metrics_path: '/metrics'
 
-  # Frontend 애플리케이션 모니터링
-  - job_name: 'agent-memory-frontend'
-    scrape_interval: 30s
-    static_configs:
-      - targets: ['frontend:8501']
-    metrics_path: /metrics
-    honor_labels: true
-
-  # Redis 모니터링
-  - job_name: 'redis'
-    scrape_interval: 15s
-    static_configs:
-      - targets: ['redis:6379']  # 내부 포트는 6379
-    metrics_path: /metrics
-
-  # Neo4j 모니터링
-  - job_name: 'neo4j'
-    scrape_interval: 30s
-    static_configs:
-      - targets: ['neo4j:2004']
-    metrics_path: /metrics
-    basic_auth:
-      username: 'neo4j'
-      password: 'testpassword'
-
-  # ChromaDB 모니터링
-  - job_name: 'chromadb'
-    scrape_interval: 30s
-    static_configs:
-      - targets: ['chroma:8000']  # 내부 포트는 8000
-    metrics_path: /api/v1/heartbeat
-
-  # Node Exporter (시스템 메트릭)
   - job_name: 'node-exporter'
-    scrape_interval: 15s
     static_configs:
       - targets: ['node-exporter:9100']
 
-  # cAdvisor (컨테이너 메트릭)
   - job_name: 'cadvisor'
-    scrape_interval: 15s
     static_configs:
       - targets: ['cadvisor:8080']
-
-  # Agent 성능 메트릭
-  - job_name: 'agent-performance'
-    scrape_interval: 10s
-    static_configs:
-      - targets: ['backend:8000']
-    metrics_path: /api/v1/performance/metrics
-
-  # Memory System 메트릭
-  - job_name: 'memory-system'
-    scrape_interval: 15s
-    static_configs:
-      - targets: ['backend:8000']
-    metrics_path: /api/v1/memory/metrics
-
-  # Feedback System 메트릭
-  - job_name: 'feedback-system'
-    scrape_interval: 20s
-    static_configs:
-      - targets: ['backend:8000']
-    metrics_path: /api/v1/feedback/metrics
-
-  # MCP Tools 모니터링
-  - job_name: 'mcp-tools'
-    scrape_interval: 15s
-    static_configs:
-      - targets: ['backend:8000']
-    metrics_path: /api/v1/mcp/metrics

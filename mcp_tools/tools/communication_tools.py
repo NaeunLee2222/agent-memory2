@@ -3,7 +3,7 @@ from typing import Dict, Any, List
 
 async def send_slack_message(channel: str = "#general", message: str = "", mentions: List[str] = None) -> Dict[str, Any]:
     """슬랙 메시지 전송"""
-    await asyncio.sleep(0.3)  # 시뮬레이션
+    await asyncio.sleep(0.3)
     
     if not mentions:
         mentions = []
@@ -17,6 +17,6 @@ async def send_slack_message(channel: str = "#general", message: str = "", menti
         "channel": channel,
         "message": formatted_message,
         "mentions": mentions,
-        "timestamp": asyncio.get_event_loop().time(),
+        "timestamp": "2025-01-20T10:30:00Z",
         "status": "sent"
     }
