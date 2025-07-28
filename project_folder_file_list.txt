@@ -1,0 +1,86 @@
+AGENT-MEMORY2/
+├── .env
+├── .gitignore
+├── LICENSE
+├── Readme.md
+├── backend_connect_problem.sh
+├── backend_connect_status.sh
+├── docker-compose-fix.yml
+├── docker-compose.yml
+├── memory_api_test.sh
+├── requirements.txt
+├── test.py
+├── backend/
+│   ├── __pycache__/
+│   ├── agent/
+│   │   ├── __init__.py
+│   │   ├── executor.py
+│   │   ├── planner.py
+│   │   └── reasoner.py
+│   ├── database/
+│   │   ├── __pycache__/
+│   │   ├── __init__.py
+│   │   └── memory_database.py
+│   ├── mcp/
+│   │   ├── __init__.py
+│   │   ├── connector.py
+│   │   └── tool_registry.py
+│   ├── memory/
+│   │   ├── __init__.py
+│   │   ├── procedural_memory.py
+│   │   ├── semantic_memory.py
+│   │   └── working_memory.py
+│   ├── models/
+│   │   ├── __pycache__/
+│   │   ├── __init__.py
+│   │   ├── agent.py
+│   │   ├── feedback.py
+│   │   ├── memory_models.py
+│   │   ├── memory.py
+│   │   ├── request_models.py
+│   │   └── schemas.py
+│   ├── services/
+│   │   ├── __pycache__/
+│   │   ├── __init__.py
+│   │   ├── agent_service.py
+│   │   ├── feedback_service.py
+│   │   ├── mcp_service.py
+│   │   └── memory_service.py
+│   ├── utils/
+│   │   ├── __pycache__/
+│   │   ├── __init__.py
+│   │   ├── config.py
+│   │   └── logger.py
+│   ├── Dockerfile
+│   ├── main.py
+│   └── requirements.txt
+├── data/
+│   └── logs/
+├── docker/
+│   ├── Dockerfile.backend
+│   ├── Dockerfile.frontend
+│   └── Dockerfile.mcp
+├── evaluation/
+│   ├── __init__.py
+│   ├── feedback_tests.py
+│   ├── memory_tests.py
+│   ├── performance_monitor.py
+│   └── poc_evaluator.py
+├── frontend/
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   ├── streamlit_app.py
+│   └── streamlit_app copy.py
+├── mcp_tools/
+│   ├── __init__.py
+│   ├── emergency_mail.py
+│   ├── generate_msg.py
+│   ├── mcp_server.py
+│   ├── requirements.txt
+│   ├── search_db.py
+│   ├── send_slack.py
+│   └── tools/
+├── monitoring/
+│   ├── grafana/
+│   ├── rules/
+│   └── prometheus.yml

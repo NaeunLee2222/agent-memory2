@@ -4,10 +4,11 @@ import httpx
 from typing import Dict, Any, Optional
 import logging
 from datetime import datetime
+from typing import List, Dict, Any, Optional
 
 class MCPConnector:
     def __init__(self):
-        self.base_url = "http://localhost:3000"  # MCP 서버 주소
+        self.base_url = "http://mcp-server:3000"  # MCP 서버 주소
         self.timeout = 30.0
         self.logger = logging.getLogger(__name__)
         
@@ -76,12 +77,30 @@ class MCPConnector:
             return {"status": "unhealthy", "error": str(e)}
     
     async def get_available_tools(self) -> List[Dict[str, Any]]:
-        """사용 가능한 도구 목록 조회"""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(f"{self.base_url}/tools")
                 response.raise_for_status()
-                return response.json().get("tools", [])
+                data = response.json()
+
+                tools = []
+                if isinstance(data, dict) and "tools" in data:
+                    tools = data["tools"]
+                elif isinstance(data, list):
+                    tools = data
+                else:
+                    return []
+
+                normalized_tools = []
+                for tool in tools:
+                    if isinstance(tool, str):
+                        normalized_tools.append({"name": tool, "description": ""})
+                    elif isinstance(tool, dict):
+                        name = tool.get("name")
+                        description = tool.get("description", "")
+                        if name:
+                            normalized_tools.append({"name": name, "description": description})
+                return normalized_tools
         except Exception as e:
             self.logger.error(f"Failed to get available tools: {str(e)}")
             return []

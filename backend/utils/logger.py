@@ -1,5 +1,3 @@
-# 5. backend/utils/logger.py - 로거 유틸리티 파일 생성
-
 import logging
 import sys
 from typing import Optional
@@ -20,9 +18,9 @@ def get_logger(name: str, level: Optional[str] = None) -> logging.Logger:
         handler = logging.StreamHandler(sys.stdout)
         handler.setLevel(getattr(logging, log_level.upper()))
         
-        # 포매터 생성
+        # 포매터 생성 (파일명, 라인번호 추가)
         formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            '%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
         handler.setFormatter(formatter)

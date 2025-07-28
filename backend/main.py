@@ -5,6 +5,10 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 import uuid
 import logging
+import os
+from dotenv import load_dotenv
+import openai
+from backend.mcp.connector import MCPConnector
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,6 +22,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+load_dotenv()
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
+mcp_connector = MCPConnector()
+
+# 전역 변수 추가
+procedural_service = None
+
+@app.on_event("startup")
+async def startup_event():
+    global procedural_service
+    # # memory_service와 mcp_service 초기화 후
+    # procedural_service = ProceduralMemoryService(memory_service, mcp_service)
+
 
 class ChatRequest(BaseModel):
     message: str
@@ -48,256 +67,132 @@ async def health_check():
         "message": "Agentic AI Backend - WORKING VERSION"
     }
 
+
+
+async def get_tool_plan_from_llm(user_message, available_tools):
+    """
+    LLM에게 질의와 tool 목록을 주고, 사용할 tool plan을 JSON으로 받는다.
+    """
+    available_tools = await mcp_connector.get_available_tools()
+    print("available_tools:", available_tools)
+
+    if not isinstance(available_tools, list):
+        available_tools = []
+
+    tool_names = [tool['name'] for tool in available_tools if isinstance(tool, dict) and 'name' in tool]
+    tool_descs = "\n".join([f"- {tool['name']}: {tool.get('description','')}" for tool in available_tools if isinstance(tool, dict) and 'name' in tool])
+
+    
+    prompt = f"""
+너는 사용자의 요청을 MCP tool을 조합해 해결하는 AI 플래너야.
+아래는 사용 가능한 tool 목록이야:
+{tool_descs}
+
+사용자 요청:
+\"\"\"{user_message}\"\"\"
+
+아래 형식의 JSON으로, 순차적으로 실행할 plan을 만들어줘.
+[
+  {{"tool": "tool_name", "parameters": {{...}} }},
+  ...
+]
+반드시 tool_name은 위 목록에서만 선택하고, parameters는 각 tool에 맞게 예시로 채워줘.
+"""
+    response = openai.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2,
+        max_tokens=512
+    )
+    # LLM이 반환한 JSON 부분만 추출
+    import json, re
+    content = response.choices[0].message.content
+    # JSON 추출 (가장 먼저 나오는 대괄호 블록)
+    if not isinstance(content, str):
+        content = str(content)
+    match = re.search(r"\[.*\]", content, re.DOTALL)
+    if match:
+        plan_json = match.group(0)
+        try:
+            plan = json.loads(plan_json)
+            return plan
+        except Exception as e:
+            print("LLM JSON 파싱 오류:", e)
+    # fallback: analyze_text만 실행
+    return [{"tool": "analyze_text", "parameters": {"text": user_message, "analysis_type": "general"}}]
+
+
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest):
     logger.info(f"Chat request received: {request.message[:50]}...")
-    
     session_id = request.session_id or str(uuid.uuid4())
-    
-    if "AI 프로젝트" in request.message and "검색" in request.message:
-        execution_trace = [
-            {
-                "step_id": 1,
-                "tool": "search_database",
-                "parameters": {"query": "AI 프로젝트"},
-                "success": True,
-                "output": "검색 결과: 'AI 프로젝트' 관련 5개 항목 발견",
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            {
-                "step_id": 2,
-                "tool": "analyze_text",
-                "parameters": {"text": "검색 결과 분석"},
-                "success": True,
-                "output": "텍스트 분석 완료 - 검색 결과 요약 및 분류",
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            {
-                "step_id": 3,
-                "tool": "modify_tbe_content",
-                "parameters": {"content": "기존 콘텐츠", "modifications": ["검색 결과 반영"]},
-                "success": True,
-                "output": "TBE 콘텐츠 수정 완료 - 검색 결과 기반 업데이트 적용",
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            {
-                "step_id": 4,
-                "tool": "send_slack_message",
-                "parameters": {"channel": "#general", "message": "AI 프로젝트 콘텐츠 수정 완료"},
-                "success": True,
-                "output": "슬랙 메시지 전송 완료 - 채널: #general",
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        ]
-        
-        response_text = """🔍 AI 프로젝트 검색 및 TBE 콘텐츠 수정 작업 완료!
 
-실행된 작업:
-- 데이터베이스 검색: 'AI 프로젝트' 관련 5개 항목 발견
-- 검색 결과 분석: 텍스트 요약 및 분류 완료  
-- TBE 콘텐츠 수정: 검색 결과를 반영하여 기존 콘텐츠 업데이트
-- 슬랙 알림 전송: #general 채널에 작업 완료 메시지 전송
+    # 1. MCP에서 사용 가능한 툴 목록 조회
+    raw_tools = await mcp_connector.get_available_tools()
+    logger.info(f"Raw tools: {raw_tools}")
 
-총 4개의 도구를 순차적으로 실행하여 요청을 완료했습니다."""
-
-        return ChatResponse(
-            response=response_text,
-            session_id=session_id,
-            execution_trace=execution_trace,
-            metadata={
-                "mode": request.mode,
-                "tools_used": 4,
-                "success_rate": 1.0,
-                "processing_time": "2.8초",
-                "workflow_type": "data_search_and_modification"
-            }
-        )
-    
-    elif ("RFQ" in request.message or "rfq" in request.message.lower()) and "문서" in request.message:
-        company_name = "테크이노베이션" if "테크이노베이션" in request.message else "Unknown Company"
-        project_title = "AI 챗봇 개발" if "AI 챗봇 개발" in request.message else "프로젝트"
-        
-        execution_trace = [
-            {
-                "step_id": 1,
-                "tool": "analyze_text",
-                "parameters": {"text": request.message, "analysis_type": "document_requirements"},
-                "success": True,
-                "output": f"문서 요구사항 분석 완료 - 회사: {company_name}, 프로젝트: {project_title}",
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            {
-                "step_id": 2,
-                "tool": "create_rfq_cover",
-                "parameters": {"company_name": company_name, "project_title": project_title, "deadline": "TBD"},
-                "success": True,
-                "output": f"RFQ 커버 페이지 생성 완료 - {company_name}, {project_title}",
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            {
-                "step_id": 3,
-                "tool": "generate_content",
-                "parameters": {"template": "rfq_template", "data": {"project": project_title, "company": company_name}},
-                "success": True,
-                "output": "RFQ 본문 콘텐츠 자동 생성 완료",
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            {
-                "step_id": 4,
-                "tool": "combine_rfq_cover",
-                "parameters": {"documents": ["cover", "content"], "output_format": "pdf"},
-                "success": True,
-                "output": "RFQ 문서 통합 완료 - PDF 형식으로 결합",
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            {
-                "step_id": 5,
-                "tool": "send_slack_message",
-                "parameters": {"channel": "#general", "message": f"{project_title} RFQ 문서 생성 완료"},
-                "success": True,
-                "output": "슬랙 완료 알림 전송 완료",
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        ]
-        
-        response_text = f"""📄 RFQ 문서 생성 플로우 완료!
-
-문서 정보:
-- 회사명: {company_name}
-- 프로젝트: {project_title}
-- 형식: PDF
-
-실행된 작업:
-- 요구사항 분석: RFQ 문서 타입 및 필수 정보 추출
-- 커버 페이지 생성: 회사명, 프로젝트명, 마감일 포함
-- 본문 콘텐츠 생성: 프로젝트 상세 요구사항 및 조건 작성
-- 문서 통합: 커버와 본문을 하나의 PDF로 결합
-- 완료 알림: #general 채널에 생성 완료 메시지 전송
-
-총 5개의 도구를 사용하여 완전한 RFQ 문서를 생성했습니다."""
-
-        return ChatResponse(
-            response=response_text,
-            session_id=session_id,
-            execution_trace=execution_trace,
-            metadata={
-                "mode": request.mode,
-                "tools_used": 5,
-                "success_rate": 1.0,
-                "document_type": "RFQ",
-                "processing_time": "4.5초",
-                "workflow_type": "document_generation"
-            }
-        )
-    
-    elif "블록체인" in request.message and "개발" in request.message:
-        execution_trace = [
-            {
-                "step_id": 1,
-                "tool": "create_rfq_cover",
-                "parameters": {"company_name": "TechCorp", "project_title": "블록체인 개발", "deadline": "2025-08-31"},
-                "success": True,
-                "output": "블록체인 개발 RFQ 커버 생성 완료",
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            {
-                "step_id": 2,
-                "tool": "search_database", 
-                "parameters": {"query": "블록체인", "filters": {"category": "development"}},
-                "success": True,
-                "output": "블록체인 관련 기술 정보 및 사례 검색 완료 - 12개 항목",
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            {
-                "step_id": 3,
-                "tool": "analyze_text",
-                "parameters": {"text": "블록체인 검색 결과", "analysis_type": "technology_analysis"},
-                "success": True,
-                "output": "블록체인 기술 동향 및 요구사항 분석 완료",
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            {
-                "step_id": 4,
-                "tool": "generate_content",
-                "parameters": {"template": "blockchain_rfq", "data": {"analysis_result": "기술 분석 결과"}},
-                "success": True,
-                "output": "블록체인 개발 RFQ 본문 생성 완료 - 기술 요구사항 포함",
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            {
-                "step_id": 5,
-                "tool": "combine_rfq_cover",
-                "parameters": {"documents": ["cover", "enhanced_content"], "output_format": "pdf"},
-                "success": True,
-                "output": "최종 블록체인 RFQ 문서 통합 완료",
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            {
-                "step_id": 6,
-                "tool": "send_slack_message",
-                "parameters": {"channel": "#development", "message": "블록체인 RFQ 검토 요청", "mentions": ["developer"]},
-                "success": True,
-                "output": "@developer에게 검토 요청 메시지 전송 완료",
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        ]
-        
-        response_text = """⛓️ 블록체인 개발 RFQ 복합 작업 플로우 완료!
-
-실행된 작업:
-- RFQ 커버 생성: 블록체인 개발 프로젝트 기본 정보 작성
-- 기술 정보 검색: 블록체인 관련 최신 기술 동향 및 사례 수집 (12개 항목)
-- 기술 분석: 검색된 정보를 바탕으로 요구사항 및 기술 스택 분석
-- 향상된 본문 생성: 기술 분석 결과를 반영한 상세 RFQ 본문 작성
-- 문서 통합: 커버와 향상된 본문을 최종 PDF로 결합
-- 검토 요청: #development 채널에서 @developer에게 검토 요청
-
-총 6개의 도구를 사용하여 기술 분석이 포함된 고품질 RFQ를 완성했습니다."""
-
-        return ChatResponse(
-            response=response_text,
-            session_id=session_id,
-            execution_trace=execution_trace,
-            metadata={
-                "mode": request.mode,
-                "tools_used": 6,
-                "success_rate": 1.0,
-                "document_type": "Enhanced_RFQ",
-                "processing_time": "6.2초",
-                "workflow_type": "complex_document_workflow"
-            }
-        )
-    
+    # 문자열 리스트라면 dict로 변환
+    if isinstance(raw_tools, list):
+        if all(isinstance(t, str) for t in raw_tools):
+            available_tools = [{"name": t} for t in raw_tools]
+        elif all(isinstance(t, dict) and "name" in t for t in raw_tools):
+            available_tools = raw_tools
+        else:
+            raise HTTPException(status_code=500, detail="MCP에서 반환된 도구 형식이 올바르지 않습니다.")
     else:
-        execution_trace = [
-            {
-                "step_id": 1,
-                "tool": "analyze_text",
-                "parameters": {"text": request.message, "analysis_type": "general"},
-                "success": True,
-                "output": f"요청 분석 완료 - 길이: {len(request.message)}자, 유형: 일반 요청",
+        raise HTTPException(status_code=500, detail="도구 목록 응답 형식 오류")
+
+    tool_names = [tool["name"] for tool in available_tools]
+
+    # 2. LLM에게 플랜 생성 요청
+    plan = await get_tool_plan_from_llm(request.message, available_tools)
+
+    # 3. 플랜 실행
+    execution_trace = []
+    for idx, step in enumerate(plan, 1):
+        tool_name = step["tool"]
+        parameters = step.get("parameters", {})
+        if tool_name not in tool_names:
+            execution_trace.append({
+                "step_id": idx,
+                "tool": tool_name,
+                "parameters": parameters,
+                "success": False,
+                "output": f"Tool '{tool_name}' is not available.",
                 "timestamp": datetime.utcnow().isoformat()
-            }
-        ]
-        
-        return ChatResponse(
-            response=f"""✅ {request.mode} 모드로 요청을 처리했습니다.
+            })
+            continue
+        result = await mcp_connector.call_tool(tool_name, parameters)
+        if result is None or not isinstance(result, dict):
+            result = {"success": False, "error": "도구 실행 오류 또는 응답 없음"}
+        execution_trace.append({
+            "step_id": idx,
+            "tool": tool_name,
+            "parameters": parameters,
+            "success": result.get("success", False),
+            "output": result.get("output", result.get("error", "")),
+            "timestamp": datetime.utcnow().isoformat()
+        })
 
-요청 내용: "{request.message}"
-분석 결과: 일반적인 텍스트 요청으로 분류되었습니다.
+    # 4. 응답 생성
+    response_text = f"총 {len(execution_trace)}개의 도구를 순차적으로 실행했습니다.\n"
+    for step in execution_trace:
+        response_text += f"- {step['tool']}: {step['output']}\n"
 
-더 구체적인 작업을 원하시면 다음과 같은 요청을 시도해보세요:
-- "RFQ 문서 생성"  
-- "데이터베이스 검색 후 콘텐츠 수정"
-- "블록체인 개발 프로젝트 문서 작성" """,
-            session_id=session_id,
-            execution_trace=execution_trace,
-            metadata={
-                "mode": request.mode,
-                "tools_used": 1,
-                "success_rate": 1.0
-            }
-        )
+    return ChatResponse(
+        response=response_text,
+        session_id=session_id,
+        execution_trace=execution_trace,
+        metadata={
+            "mode": request.mode,
+            "tools_used": len(execution_trace),
+            "success_rate": sum(1 for s in execution_trace if s['success']) / len(execution_trace) if execution_trace else 0.0,
+            "processing_time": f"{len(execution_trace) * 1.2:.1f}초 (예상)",
+            "workflow_type": "llm_dynamic_plan"
+        }
+    )
+
+
 
 @app.post("/feedback")
 async def submit_feedback(session_id: str, rating: int, comments: str = ""):
