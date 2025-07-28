@@ -6,8 +6,8 @@ from datetime import datetime, timedelta
 import json
 import uuid
 
-from models.memory import MemoryType, MemoryData
-from utils.logger import get_logger
+from backend.models.memory import MemoryType, MemoryData
+from backend.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
